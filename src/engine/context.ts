@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Account } from '../../../super-agent/src/shared/types';
+import type { Account } from '../core/types';
 import type { Thread, ThreadSession } from './types';
 
 /**

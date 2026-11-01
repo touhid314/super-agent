@@ -1,8 +1,8 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Account, AccountStatus, AccountUsage } from '../../../super-agent/src/shared/types';
-import { AgentLogo } from '../../../super-agent/src/renderer/src/components/Logos';
-import { Markdown } from '../../../super-agent/src/renderer/src/components/Markdown';
+import type { Account, AccountStatus, AccountUsage } from '../core/types';
+import { AgentLogo, TelegramLogo } from './components/Logos';
+import { Markdown } from './components/Markdown';
 import type { Thread } from '../engine/types';
 import { TelegramCard, type TelegramView } from './telegram';
 
@@ -46,6 +46,20 @@ function chime(kind: 'done' | 'task' | 'failed'): void {
   } catch {
     /* audio unavailable */
   }
+}
+
+const AGENT_TYPES: { kind: Account['kind']; name: string; maker: string }[] = [
+  { kind: 'codex', name: 'Codex', maker: 'OpenAI' },
+  { kind: 'claude', name: 'Claude Code', maker: 'Anthropic' },
+  { kind: 'antigravity', name: 'Antigravity', maker: 'Google' },
+];
+
+function resetsIn(ts?: number): string {
+  if (!ts) return '';
+  const m = Math.max(0, Math.round((ts - Date.now()) / 60000));
+  if (m < 60) return `resets in ${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `resets in ${h}h ${m % 60}m` : `resets in ${Math.round(h / 24)}d`;
 }
 
 // ---------------------------------------------------------------- app
@@ -143,16 +157,31 @@ function App() {
       <section className="feed" ref={feed}>
         {!thread && (
           <div className="hero">
-            <div className="hero-logos">
-              {team.slice(0, 4).map((a) => (
-                <Logo key={a.id} kind={a.kind} />
+            <h1>Agents that work in harmony</h1>
+            <p className="muted hint">
+              Add as many accounts as you like. They work together as one team: one leads, teammates take on independent pieces, and when one runs out of usage another carries on with the same context.
+            </p>
+            <div className="hero-agents">
+              {AGENT_TYPES.map(({ kind, name, maker }) => (
+                <button key={kind} className="hero-card" title={`Add a ${name} account`} onClick={() => send({ type: 'addAccount', kind })}>
+                  <span className={`logo ${kind}`}>
+                    <AgentLogo kind={kind} size={28} />
+                  </span>
+                  <b>{name}</b>
+                  <span className="muted">{maker}</span>
+                  <span className="hero-add">+ Add</span>
+                </button>
               ))}
             </div>
-            <h1>Let's build</h1>
-            <div className="muted">{state.workspace ? state.workspace.split(/[\\/]/).pop() : 'No folder open'}</div>
-            <p className="muted hint">
-              One agent leads and works right away, handing independent pieces to free teammates. If it runs out of usage, another continues with the same context.
-            </p>
+            <button className="hero-tg" onClick={() => setShowTelegram(true)}>
+              <TelegramLogo size={36} />
+              <span className="hero-tg-text">
+                <b>Your workstation, from your phone</b>
+                <span className="muted">Connect Telegram to message your agents and follow their work from anywhere.</span>
+              </span>
+              <span className="hero-add">{tg === 'on' || tg === 'standby' ? 'Connected ✓' : 'Connect'}</span>
+            </button>
+            <div className="muted ws">{state.workspace ? `Working in ${state.workspace.split(/[\\/]/).pop()}` : 'No folder open'}</div>
             {!state.workspace && <div className="warn">Open a folder first: agents work in the open workspace folder.</div>}
           </div>
         )}
@@ -229,6 +258,14 @@ function App() {
         {showTelegram && <TelegramCard t={state.telegram ?? { state: 'off' }} send={send} onClose={() => setShowTelegram(false)} />}
         {showUsage && (
           <div className="usage-panel">
+            <div className="usage-head">
+              <b>Usage</b>
+              <span className="spacer" />
+              <button className="x" title="Close" onClick={() => setShowUsage(false)}>
+                ×
+              </button>
+            </div>
+            <div className="usage-grid">
             {team.map((a) => (
               <div key={a.id} className="usage-item">
                 <div className="row">
@@ -242,11 +279,13 @@ function App() {
                       <i className={w.label.startsWith('week') ? 'week' : 'short'} style={{ width: `${Math.max(2, 100 - w.percent)}%` }} />
                     </span>
                     <span>{Math.round(100 - w.percent)}% left</span>
+                    <span className="muted u-reset">{resetsIn(w.resetsAt)}</span>
                   </div>
                 ))}
                 {!state.usage[a.id]?.windows.length && <div className="muted">{state.usage[a.id]?.note ?? 'No limit data'}</div>}
               </div>
             ))}
+            </div>
           </div>
         )}
         <div className="box" onClick={() => input.current?.focus()}>

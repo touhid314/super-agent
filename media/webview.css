@@ -51,9 +51,18 @@ i.week { background: #58a6ff; }
 .hero { margin: auto 0; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 24px 8px; }
 .hero h1 { font-size: 22px; font-weight: 600; margin: 10px 0 0; letter-spacing: -0.01em; }
 .hero .hint { max-width: 300px; line-height: 1.5; font-size: 12px; margin-top: 12px; }
-.hero-logos { display: flex; }
-.hero-logos .logo { width: 30px; height: 30px; margin-left: -6px; box-shadow: 0 0 0 2px var(--vscode-sideBar-background); }
-.hero-logos .logo svg { width: 18px; height: 18px; }
+.hero-agents { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; width: 100%; max-width: 360px; margin-top: 16px; }
+.hero-card, .hero-tg { border: 1px solid var(--line); background: var(--soft); border-radius: 12px; cursor: pointer; font-size: 12px; transition: border-color 0.15s; }
+.hero-card:hover, .hero-tg:hover { border-color: var(--vscode-focusBorder); }
+.hero-card { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 6px 10px; }
+.hero-card .logo { width: 40px; height: 40px; margin-bottom: 6px; }
+.hero-card .logo svg { width: 26px; height: 26px; }
+.hero-add { margin-top: 6px; font-size: 11px; color: var(--vscode-textLink-foreground); }
+.hero-tg { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 360px; margin-top: 10px; padding: 12px; text-align: left; }
+.hero-tg svg { flex: none; }
+.hero-tg-text { display: flex; flex-direction: column; gap: 2px; flex: 1; line-height: 1.4; }
+.hero-tg .hero-add { margin-top: 0; flex: none; }
+.hero .ws { margin-top: 14px; font-size: 11.5px; }
 
 .msg { line-height: 1.6; overflow-wrap: anywhere; }
 .msg.me { align-self: flex-end; max-width: 85%; background: var(--soft); padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; }
@@ -88,7 +97,7 @@ i.week { background: #58a6ff; }
 @keyframes pulse { 50% { opacity: 0.3; } }
 
 /* composer: rounded card with the toolbar inside */
-.composer { padding: 0 10px 8px; }
+.composer { position: relative; padding: 0 10px 8px; }
 .box { border: 1px solid var(--line); background: var(--vscode-input-background); border-radius: 14px; padding: 10px 10px 8px 12px; cursor: text; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12); }
 .box:focus-within { border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent); }
 .box textarea { width: 100%; box-sizing: border-box; resize: none; border: 0; outline: none; background: transparent; color: var(--vscode-input-foreground); padding: 0; line-height: 1.5; min-height: 20px; max-height: 220px; display: block; }
@@ -143,7 +152,14 @@ i.week { background: #58a6ff; }
 .tg-code { color: var(--vscode-foreground); font-family: var(--vscode-editor-font-family); letter-spacing: 0.08em; user-select: all; }
 .small { font-size: 11.5px; }
 
-.usage-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 12px; }
+/* Floats over the feed, just above the prompt box, which stays usable. */
+.usage-panel { position: absolute; left: 10px; right: 10px; bottom: 100%; z-index: 50; max-height: 60vh; overflow-y: auto; box-sizing: border-box; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--vscode-sideBar-background); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
+.usage-head { display: flex; align-items: center; margin-bottom: 8px; }
+.usage-head .x { border: 0; background: none; cursor: pointer; color: var(--vscode-descriptionForeground); font-size: 16px; }
+.usage-head .x:hover { color: var(--vscode-foreground); }
+.usage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .usage-item { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; min-width: 0; }
-.u-row { display: grid; grid-template-columns: 30px 1fr 52px; gap: 6px; align-items: center; }
+.u-row { display: grid; grid-template-columns: 30px 1fr 52px; gap: 2px 6px; align-items: center; }
+.u-reset { grid-column: 2 / -1; font-size: 0.9em; }
+.u-reset:empty { display: none; }
 .u-bar { height: 4px; border-radius: 3px; background: rgba(128, 128, 128, 0.25); overflow: hidden; }

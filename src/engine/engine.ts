@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Account, AgentKind, Autonomy } from '../../../super-agent/src/shared/types';
-import type { AccountPool } from '../../../super-agent/src/main/agents/pool';
-import type { RunRequest, RunResult } from '../../../super-agent/src/main/agents/runner';
-import type { ConfigStore } from '../../../super-agent/src/main/store/config';
+import type { Account, AgentKind, Autonomy } from '../core/types';
+import type { AccountPool } from '../core/agents/pool';
+import type { RunRequest, RunResult } from '../core/agents/runner';
+import type { ConfigStore } from '../core/store/config';
 import { contextBrief, helperPrompt, leadPreamble, transferSession } from './context';
 import type { Thread } from './types';
 

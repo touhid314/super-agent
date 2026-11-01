@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AccountPool } from '../../super-agent/src/main/agents/pool';
-import type { RunRequest, RunResult } from '../../super-agent/src/main/agents/runner';
-import type { Account } from '../../super-agent/src/shared/types';
+import { AccountPool } from '../src/core/agents/pool';
+import type { RunRequest, RunResult } from '../src/core/agents/runner';
+import type { Account } from '../src/core/types';
 import { Engine } from '../src/engine/engine';
 import type { Thread } from '../src/engine/types';
 

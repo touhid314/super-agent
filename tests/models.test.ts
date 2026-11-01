@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Account } from '../../super-agent/src/shared/types';
+import type { Account } from '../src/core/types';
 import { listModels, modelInfo } from '../src/engine/models';
 
 const acc = (kind: Account['kind'], home: string | null, model?: string): Account => ({ id: 'x', kind, label: 'x', home, role: 'worker', model, createdAt: 0 });

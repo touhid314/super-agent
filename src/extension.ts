@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { AccountService } from '../../super-agent/src/main/agents/accounts';
-import { ensureAgyBrowser } from '../../super-agent/src/main/agents/cli';
-import { AccountPool } from '../../super-agent/src/main/agents/pool';
-import { cancelRun, cancelAll, runAgent } from '../../super-agent/src/main/agents/runner';
-import { UsageService } from '../../super-agent/src/main/agents/usage';
-import { ConfigStore } from '../../super-agent/src/main/store/config';
-import { paths } from '../../super-agent/src/main/store/paths';
-import type { AgentKind } from '../../super-agent/src/shared/types';
+import { AccountService } from './core/agents/accounts';
+import { ensureAgyBrowser } from './core/agents/cli';
+import { AccountPool } from './core/agents/pool';
+import { cancelRun, cancelAll, runAgent } from './core/agents/runner';
+import { UsageService } from './core/agents/usage';
+import { ConfigStore } from './core/store/config';
+import { paths } from './core/store/paths';
+import { AGENT_KINDS, type AgentKind } from './core/types';
 import { Engine } from './engine/engine';
 import { FileStore, TelegramRelay, uniqueIn } from './telegram';
 import { listModels, modelInfo, type ModelOption } from './engine/models';
@@ -366,13 +366,14 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => clearInterval(telegramTimer) },
   );
 
-  async function addAccount(): Promise<void> {
+  /** Adds an account of `kind`, asking which agent first when none is given. */
+  async function addAccount(kind?: AgentKind): Promise<void> {
     const kinds: { label: string; agent: AgentKind }[] = [
       { label: 'Codex (OpenAI)', agent: 'codex' },
       { label: 'Claude Code (Anthropic)', agent: 'claude' },
       { label: 'Antigravity (Google)', agent: 'antigravity' },
     ];
-    const pick = await vscode.window.showQuickPick(kinds, { placeHolder: 'Which agent account do you want to add?' });
+    const pick = kind ? { agent: kind } : await vscode.window.showQuickPick(kinds, { placeHolder: 'Which agent account do you want to add?' });
     if (!pick) return;
     try {
       const acc = accounts.add(pick.agent, '');
@@ -439,7 +440,7 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'signIn':
         return accounts.signIn(m.id);
       case 'addAccount':
-        return void addAccount();
+        return void addAccount(AGENT_KINDS.includes(m.kind) ? m.kind : undefined);
       case 'importLogins':
         return void vscode.commands.executeCommand('superAgent.importLogins');
       case 'refreshUsage':

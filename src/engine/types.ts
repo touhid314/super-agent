@@ -1,4 +1,4 @@
-import type { AgentKind } from '../../../super-agent/src/shared/types';
+import type { AgentKind } from '../core/types';
 
 export interface ThreadMsg {
   at: number;

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-label="Super Agent: Codex, Claude Code and Antigravity working as one team, reachable from Telegram">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f1320"/><stop offset="1" stop-color="#1a1f33"/></linearGradient>
+    <linearGradient id="ag" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#4285F4"/><stop offset="0.4" stop-color="#34A853"/><stop offset="0.7" stop-color="#FBBC04"/><stop offset="1" stop-color="#EA4335"/></linearGradient>
+    <linearGradient id="link" x1="0" x2="1"><stop offset="0" stop-color="#8b9cff" stop-opacity="0.2"/><stop offset="0.5" stop-color="#8b9cff"/><stop offset="1" stop-color="#8b9cff" stop-opacity="0.2"/></linearGradient>
+    <style>
+      .title{font:700 54px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#fff;letter-spacing:-1px}
+      .sub{font:400 22px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#aeb6d0}
+      .name{font:600 20px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#fff}
+      .maker{font:400 15px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#8a93ad}
+      .tag{font:600 14px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#c9d1ff;letter-spacing:2px}
+    </style>
+  </defs>
+  <rect width="1200" height="470" rx="24" fill="url(#bg)"/>
+  <text x="60" y="96" class="title">Super Agent</text>
+  <text x="60" y="136" class="sub">Your coding agents, working in harmony, inside VS Code.</text>
+  <text x="60" y="196" class="tag">ONE TEAM</text>
+  <path d="M135 345 H835" stroke="url(#link)" stroke-width="3" stroke-dasharray="2 10" stroke-linecap="round"/>
+  
+  <g transform="translate(60 220)">
+    <rect width="150" height="150" rx="28" fill="#0b0b0c" stroke="#ffffff22"/>
+    <g transform="translate(39 30) scale(3)"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" fill="#fff" transform="translate(0.5 0.5) scale(0.95)"/></g>
+    <text x="75" y="186" text-anchor="middle" class="name">Codex</text>
+    <text x="75" y="210" text-anchor="middle" class="maker">OpenAI</text>
+  </g>
+  
+  <g transform="translate(260 220)">
+    <rect width="150" height="150" rx="28" fill="#f6efe6" stroke="#ffffff22"/>
+    <g transform="translate(39 30) scale(3)"><g stroke="#D97757" stroke-width="2.3" stroke-linecap="round"><line x1="13.6" y1="12" x2="22.6" y2="12"/><line x1="13.34" y1="12.87" x2="19.72" y2="17.01"/><line x1="12.75" y1="13.41" x2="17.07" y2="21.54"/><line x1="11.86" y1="13.59" x2="11.22" y2="20.97"/><line x1="11.01" y1="13.26" x2="5.6" y2="20.2"/><line x1="10.52" y1="12.6" x2="3.28" y2="15.52"/><line x1="10.42" y1="11.72" x2="1.27" y2="10.11"/><line x1="10.81" y1="10.93" x2="5.24" y2="5.91"/><line x1="11.51" y1="10.48" x2="8.76" y2="2.01"/><line x1="12.41" y1="10.45" x2="14.41" y2="3.02"/><line x1="13.15" y1="10.89" x2="19.7" y2="4.57"/><line x1="13.52" y1="11.51" x2="20.37" y2="9.28"/></g></g>
+    <text x="75" y="186" text-anchor="middle" class="name">Claude Code</text>
+    <text x="75" y="210" text-anchor="middle" class="maker">Anthropic</text>
+  </g>
+  
+  <g transform="translate(460 220)">
+    <rect width="150" height="150" rx="28" fill="#f4f6fb" stroke="#ffffff22"/>
+    <g transform="translate(39 30) scale(3)"><path d="M4 20 C4 9 8.5 3.5 12 3.5 C15.5 3.5 20 9 20 20" fill="none" stroke="url(#ag)" stroke-width="3.6" stroke-linecap="round"/><circle cx="12" cy="15" r="2.4" fill="url(#ag)"/></g>
+    <text x="75" y="186" text-anchor="middle" class="name">Antigravity</text>
+    <text x="75" y="210" text-anchor="middle" class="maker">Google</text>
+  </g>
+  <g transform="translate(660 220)">
+    <rect width="150" height="150" rx="28" fill="none" stroke="#ffffff33" stroke-dasharray="8 8"/>
+    <text x="75" y="96" text-anchor="middle" style="font:300 64px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#8a93ad">+</text>
+    <text x="75" y="186" text-anchor="middle" class="name">Any number</text>
+    <text x="75" y="210" text-anchor="middle" class="maker">of accounts each</text>
+  </g>
+  <text x="880" y="196" class="tag">FROM YOUR PHONE</text>
+  <rect x="880" y="220" width="260" height="210" rx="28" fill="#229ED91a" stroke="#229ED966"/>
+  <g transform="translate(965 240) scale(3.75)"><circle cx="12" cy="12" r="12" fill="#229ED9"/><path d="M5.4 11.7l11.6-4.5c.54-.2 1.01.13.84.94l-1.98 9.3c-.15.66-.54.82-1.09.51l-3-2.21-1.45 1.4c-.16.16-.3.3-.6.3l.21-3.05 5.56-5.02c.24-.21-.05-.33-.38-.12l-6.87 4.33-2.96-.92c-.64-.2-.66-.64.13-.95z" fill="#fff"/></g>
+  <text x="1010" y="366" text-anchor="middle" class="name">Telegram</text>
+  <text x="1010" y="392" text-anchor="middle" class="maker">talk to the agents on</text>
+  <text x="1010" y="412" text-anchor="middle" class="maker">your workstation, anywhere</text>
+</svg>

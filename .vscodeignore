@@ -10,3 +10,4 @@ trash/**
 (s
 code
 .gitignore
+docs/**

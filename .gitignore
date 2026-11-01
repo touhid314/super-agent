@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output (regenerate with: node build.mjs)
+dist/
+media/webview.js
+*.map
+
+# Packaged extensions
+*.vsix
+
+# Local scratch
+trash/
+
+# Env / secrets
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode-test/

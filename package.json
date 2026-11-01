@@ -1,0 +1,105 @@
+{
+  "name": "super-agent",
+  "displayName": "Super Agent",
+  "description": "One agent leads, the team helps: Codex, Claude Code and Antigravity across all your accounts, with seamless hand-over when usage runs out.",
+  "version": "0.3.7",
+  "publisher": "super-agent-dev",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "superAgent",
+          "title": "Super Agent",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "superAgent.newThread",
+          "when": "view == superAgent.team",
+          "group": "navigation@1"
+        },
+        {
+          "command": "superAgent.history",
+          "when": "view == superAgent.team",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "views": {
+      "superAgent": [
+        {
+          "type": "webview",
+          "id": "superAgent.team",
+          "name": "Super Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "superAgent.focus",
+        "title": "Super Agent: Open Team"
+      },
+      {
+        "command": "superAgent.newThread",
+        "title": "New Thread",
+        "category": "Super Agent",
+        "icon": "$(add)"
+      },
+      {
+        "command": "superAgent.history",
+        "title": "Threads",
+        "category": "Super Agent",
+        "icon": "$(history)"
+      },
+      {
+        "command": "superAgent.addAccount",
+        "title": "Super Agent: Add Agent Account"
+      },
+      {
+        "command": "superAgent.importLogins",
+        "title": "Super Agent: Import Existing Logins"
+      },
+      {
+        "command": "superAgent.stopAll",
+        "title": "Super Agent: Stop All Agents"
+      },
+      {
+        "command": "superAgent.connectTelegram",
+        "title": "Super Agent: Connect Telegram"
+      },
+      {
+        "command": "superAgent.telegram",
+        "title": "Super Agent: Telegram Relay…"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "node ../super-agent/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "test": "node ../super-agent/node_modules/vitest/vitest.mjs run",
+    "package": "node build.mjs && npx --yes @vscode/vsce package --no-dependencies --skip-license --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0"
+  },
+  "dependencies": {
+    "qrcode-generator": "2.0.4"
+  }
+}

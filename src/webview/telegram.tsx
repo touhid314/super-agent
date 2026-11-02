@@ -2,8 +2,11 @@ import { useMemo, useState } from 'react';
 import qrcode from 'qrcode-generator';
 
 export interface TelegramView {
-  state: 'off' | 'pairing' | 'on' | 'standby' | 'error';
+  /** paused: turned off with one tap; the bot and the paired chat are kept, so turning it on needs no pairing. */
+  state: 'off' | 'pairing' | 'on' | 'standby' | 'error' | 'paused';
   bot?: string;
+  /** A chat is paired (set while paused). */
+  paired?: boolean;
   /** t.me link that pairs your chat when opened (scan it with your phone). */
   pairLink?: string;
   /** The same pairing code, for typing it into the bot chat. */
@@ -49,9 +52,30 @@ export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: 
           </div>
         )}
         {t.state === 'standby' && <p className="muted">Another VS Code window is currently answering the bot.</p>}
-        <button className="ghost danger" onClick={() => send({ type: 'telegramDisconnect' })}>
-          Disconnect
-        </button>
+        <div className="tg-actions">
+          <button className="ghost" title="Stop answering the bot for now; it stays paired" onClick={() => send({ type: 'telegramPause' })}>
+            Disconnect
+          </button>
+          <a className="small muted" onClick={() => send({ type: 'telegramForget' })}>
+            Forget this bot
+          </a>
+        </div>
+      </>
+    );
+  } else if (t.state === 'paused') {
+    body = (
+      <>
+        <div className="tg-step">
+          Telegram is off: nothing is sent to @{t.bot ?? 'your bot'} and it doesn't answer. It stays {t.paired ? 'paired' : 'set up'}, so connecting again takes one tap.
+        </div>
+        <div className="tg-actions">
+          <button className="ghost" onClick={() => send({ type: 'telegramResume' })}>
+            Connect
+          </button>
+          <a className="small muted" onClick={() => send({ type: 'telegramForget' })}>
+            Forget this bot
+          </a>
+        </div>
       </>
     );
   } else if (t.state === 'pairing' && t.pairLink) {
@@ -75,7 +99,7 @@ export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: 
             Chat already open and nothing happened? Send this code to the bot: <b className="tg-code">{t.code}</b>
           </div>
         )}
-        <a className="small" onClick={() => send({ type: 'telegramDisconnect' })}>
+        <a className="small" onClick={() => send({ type: 'telegramForget' })}>
           Use a different bot
         </a>
       </>
@@ -87,6 +111,9 @@ export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: 
           <span className="num">1</span>
           <div>
             Create your bot: open <a onClick={() => open(BOTFATHER)}>@BotFather</a>, send <code>/newbot</code>, pick a name. It replies with a token.
+            <div className="muted small">
+              Already made one? No need for another: in @BotFather send <code>/mybots</code>, pick your bot, then <b>API Token</b>.
+            </div>
             <div className="tg-qr-row compact">
               <Qr text={BOTFATHER} size={96} />
               <span className="muted small">Or scan to do it on your phone.</span>

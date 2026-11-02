@@ -10,9 +10,13 @@ import { UsageService } from './core/agents/usage';
 import { ConfigStore } from './core/store/config';
 import { paths } from './core/store/paths';
 import { AGENT_KINDS, type AgentKind } from './core/types';
+import { ChangeTracker } from './engine/changes';
+import { CliUpdater } from './core/agents/updater';
 import { Engine } from './engine/engine';
 import { FileStore, TelegramRelay, uniqueIn } from './telegram';
 import { configureLog, log as trace } from './core/log';
+import { fileTarget } from './links';
+import { createVoice } from './voice';
 import { listModels, modelInfo, type ModelOption } from './engine/models';
 import type { Thread } from './engine/types';
 
@@ -48,7 +52,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // Everything Super Agent decides goes to ~/.super-agent/logs/ (and this output channel), to trace issues.
   trace('ext', 'activated', { log: configureLog(paths.data, (line) => log.appendLine(line)) });
   const post = (msg: unknown) => void view?.webview.postMessage(msg);
-  const usage = new UsageService(config, { all: () => [] } as never, () => pushState());
+  // The prompt box's mic: speech to text on the local machine (Whisper).
+  const voice = createVoice({ dataDir: paths.data, model: () => config.settings.voiceModel || 'base.en', cwd: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, post });
+  context.subscriptions.push({ dispose: voice.dispose });
+  // (Work waiting for usage to come back may be able to run now.)
+  const usage = new UsageService(config, { all: () => [] } as never, () => (pushState(), engine?.usageChanged()));
 
   const decorations = new AgentDecorations();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -72,16 +80,51 @@ export function activate(context: vscode.ExtensionContext): void {
     hot.warm(team, { cwd: folder, autonomy: config.settings.autonomy, browser: config.settings.browserTools !== false });
   };
 
+  // Agent CLIs: updated when a provider says one is too old, and once a day in the background (when idle).
+  const updater = new CliUpdater((k) => accounts.cliPath(k), {
+    before: (k) => hot.pause(k),
+    after: (k) => {
+      accounts.refreshClis();
+      hot.resume(k);
+      warmedAt = 0;
+      warmTeam();
+    },
+  });
+  const updatesFile = path.join(paths.data, 'cli-updates.json');
+  const backgroundUpdates = () => {
+    if (config.settings.autoUpdateClis === false) return;
+    let last: Partial<Record<AgentKind, number>> = {};
+    try {
+      last = JSON.parse(fs.readFileSync(updatesFile, 'utf8'));
+    } catch {
+      /* first time */
+    }
+    const kinds = [...new Set(config.accounts.filter((a) => a.role !== 'off').map((a) => a.kind))];
+    for (const k of kinds) {
+      if (Date.now() - (last[k] ?? 0) < 24 * 3600000 || hot.busy(k) || !accounts.cliPath(k)) continue;
+      last[k] = Date.now();
+      fs.writeFileSync(updatesFile, JSON.stringify(last));
+      void updater.update(k);
+    }
+  };
+  const updateTimer = setTimeout(backgroundUpdates, 2 * 60000);
+  const updateInterval = setInterval(backgroundUpdates, 60 * 60000);
+  context.subscriptions.push({ dispose: () => (clearTimeout(updateTimer), clearInterval(updateInterval)) });
+
+  const changes = new ChangeTracker(paths.data);
   engine = new Engine({
     config,
     pool,
     dataDir: paths.data,
+    changes,
+    updateCli: (k) => updater.update(k),
     cliPath: (k: AgentKind) => accounts.cliPath(k),
     runAgent: (req) => (config.settings.hotAgents === false ? runAgent(req) : hot.run(req)).finally(() => usage.soon(req.account.id)),
     cancelRun: (id) => void (hot.cancel(id) || cancelRun(id)),
     steer: (id, text, label) => hot.steer(id, text, label),
     usageLoad: (id) => usage.load(id),
     usageResetAt: (id) => usage.resetAt(id),
+    refreshUsage: (id) => usage.refresh(id, true),
     autonomy: () => config.settings.autonomy,
     onChange: () => pushState(),
     onOutput: (threadId, text) => {
@@ -97,6 +140,8 @@ export function activate(context: vscode.ExtensionContext): void {
     onFinished: (t, outcome) => onFinished(t, outcome),
   });
   const eng = engine;
+  // An agent that already replied carries on by itself (its background task woke it): show it as a new turn.
+  hot.onWake = (w) => void eng.wake(w.account.id, w.sessionId);
   // Usage refreshes push state, so they start only once the engine exists.
   void usage.refreshAll();
   const usageTimer = setInterval(() => void usage.refreshAll(), 5 * 60000);
@@ -127,15 +172,6 @@ export function activate(context: vscode.ExtensionContext): void {
       return dir;
     },
     agentName: modelName,
-    status: () =>
-      config.accounts
-        .filter((a) => a.role !== 'off')
-        .map((a) => {
-          const busy = (pool.get(a.id).busyRuns ?? 0) > 0 ? ' (working)' : '';
-          const left = usage.all()[a.id]?.windows.map((w) => `${w.label} ${Math.round(100 - w.percent)}%`).join(', ');
-          return `${a.role === 'master' ? '♛ ' : ''}${modelName(a.id)}${busy}${left ? ` · ${left} left` : ''}`;
-        })
-        .join('\n') || 'No agents on the team.',
     team: {
       members: () =>
         config.accounts.map((a) => {
@@ -178,12 +214,16 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   telegram = relay;
   const BOT_KEY = 'telegram.bot';
+  /** Turned off with one tap (token and pairing kept): shared, so every VS Code window stops answering the bot. */
+  const PAUSED_KEY = 'telegram.paused';
   let telegramError: string | undefined;
+  let telegramToken: string | undefined;
   void context.secrets.get(TOKEN_KEY).then(async (token) => {
+    telegramToken = token;
     if (!token) return;
     // The QR code needs the bot's @name (older versions kept it per window).
     if (!tgStore.get(BOT_KEY)) tgStore.update(BOT_KEY, await relay.verify(token).catch(() => undefined));
-    relay.start(token);
+    if (!tgStore.get(PAUSED_KEY)) relay.start(token);
   });
 
   /** What the panel's Telegram card shows (the same in every window, from the shared store). */
@@ -192,6 +232,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const running = relay.state !== 'off' && relay.state !== 'error';
     const paired = relay.chatId !== undefined;
     const code = relay.pairCode;
+    if (telegramToken && tgStore.get(PAUSED_KEY)) return { state: 'paused', bot, paired };
     return {
       state: !running ? relay.state : !paired ? 'pairing' : relay.state === 'standby' ? 'standby' : 'on',
       bot,
@@ -204,6 +245,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // Pairing can complete in another window; keep this panel's card current.
   let lastTelegram = '';
   const telegramTimer = setInterval(() => {
+    // Turned off or back on in another window: follow it.
+    const paused = !!tgStore.get(PAUSED_KEY);
+    if (paused && relay.state !== 'off') relay.stop();
+    else if (!paused && telegramToken && relay.state === 'off') relay.start(telegramToken);
     const now = JSON.stringify(telegramView());
     if (now !== lastTelegram) {
       lastTelegram = now;
@@ -227,17 +272,37 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     if ((await context.secrets.get(TOKEN_KEY)) !== token) relay.unpair();
     await context.secrets.store(TOKEN_KEY, token);
+    telegramToken = token;
     tgStore.update(BOT_KEY, bot);
+    tgStore.update(PAUSED_KEY, undefined);
     relay.start(token);
     pushState();
   }
 
-  async function disconnectTelegram(): Promise<void> {
+  /** One tap: stop answering the bot (and streaming to it), keeping the token and the paired chat. */
+  function pauseTelegram(): void {
+    tgStore.update(PAUSED_KEY, true);
+    relay.stop();
+    pushState();
+  }
+
+  /** One tap: answer the bot again, with the same pairing. */
+  function resumeTelegram(): void {
+    tgStore.update(PAUSED_KEY, undefined);
+    telegramError = undefined;
+    if (telegramToken) relay.start(telegramToken);
+    pushState();
+  }
+
+  /** Removes the bot entirely (token and pairing): needed only to switch to another bot. */
+  async function forgetTelegram(): Promise<void> {
     relay.stop();
     relay.unpair();
     telegramError = undefined;
+    telegramToken = undefined;
     await context.secrets.delete(TOKEN_KEY);
     tgStore.update(BOT_KEY, undefined);
+    tgStore.update(PAUSED_KEY, undefined);
     pushState();
   }
 
@@ -379,13 +444,23 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('superAgent.focus', () => vscode.commands.executeCommand('superAgent.team.focus')),
     vscode.commands.registerCommand('superAgent.newThread', () => post({ type: 'newThread' })),
     vscode.commands.registerCommand('superAgent.history', async () => {
-      const items = eng.threads.map((t) => ({
-        label: `${t.status === 'working' ? '$(sync~spin) ' : t.status === 'waiting' ? '$(clock) ' : ''}${t.parentId ? '↳ ' : ''}${t.title}`,
-        description: eng.label(t.leadId),
-        detail: t.messages.filter((m) => m.role === 'agent').pop()?.text.slice(0, 120),
-        id: t.id,
-      }));
-      const pick = await vscode.window.showQuickPick(items, { placeHolder: items.length ? 'Open a thread' : 'No threads yet', matchOnDetail: true });
+      // Only conversations you started: helpers' threads are part of their lead's (opened from its work view).
+      // Each: its title, when it started and when it was last used (most recently used first).
+      const at = (ms: number) => {
+        const d = new Date(ms);
+        const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        if (d.toDateString() === new Date().toDateString()) return `today ${time}`;
+        return `${d.toLocaleDateString([], { month: 'short', day: 'numeric', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) })}, ${time}`;
+      };
+      const items = eng.threads
+        .filter((t) => !t.parentId && t.messages.length > 0)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map((t) => ({
+          label: `${t.status === 'working' ? '$(sync~spin) ' : t.status === 'waiting' ? '$(clock) ' : ''}${t.title}`,
+          description: `started ${at(t.createdAt)} · last used ${at(t.updatedAt)}`,
+          id: t.id,
+        }));
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: items.length ? 'Open a thread' : 'No threads yet' });
       if (pick) post({ type: 'selected', threadId: pick.id });
     }),
     vscode.commands.registerCommand('superAgent.addAccount', () => addAccount()),
@@ -425,8 +500,17 @@ export function activate(context: vscode.ExtensionContext): void {
   function handle(m: any): void {
     const folder = cwd();
     switch (m.type) {
-      case 'ready':
-        return pushState();
+      case 'ready': {
+        pushState();
+        // Reopen the conversation that was open in this workspace (a window reload clears the panel's own state).
+        const open = context.workspaceState.get<string>('superAgent.openThread');
+        if (open && eng.get(open)) post({ type: 'selected', threadId: open });
+        return;
+      }
+      case 'selectedChanged':
+        return void context.workspaceState.update('superAgent.openThread', typeof m.threadId === 'string' ? m.threadId : undefined);
+      case 'showHistory':
+        return void vscode.commands.executeCommand('superAgent.history');
       case 'pickModel':
         return void pickModel(m.id);
       case 'clientError': {
@@ -448,16 +532,32 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       case 'attach':
         return void attachFiles();
+      case 'voiceStart':
+        return void voice.start();
+      case 'voiceStop':
+        return void voice.stop(m.cancel === true);
       case 'pasteFile':
         return pasteFile(m.name, m.data);
       case 'telegramConnect':
         return void connectTelegram(String(m.token ?? ''));
-      case 'telegramDisconnect':
-        return void disconnectTelegram();
-      case 'openLink':
-        // Only Telegram links (BotFather, your bot).
-        if (typeof m.url === 'string' && /^https:\/\/t\.me\/[\w?=&/]+$/.test(m.url)) void vscode.env.openExternal(vscode.Uri.parse(m.url));
-        return;
+      case 'telegramPause':
+        return pauseTelegram();
+      case 'telegramResume':
+        return resumeTelegram();
+      case 'telegramForget':
+        return void forgetTelegram();
+      case 'openLink': {
+        if (typeof m.url !== 'string') return;
+        // Web links (Telegram setup, links in answers): VS Code asks before opening an untrusted domain.
+        if (/^https?:\/\/\S+$/i.test(m.url)) return void vscode.env.openExternal(vscode.Uri.parse(m.url));
+        // File links in answers: open existing files in the editor, at the cited lines; reveal folders.
+        const t = fileTarget(m.url, cwd());
+        if (!t || !fs.existsSync(t.file)) return;
+        const uri = vscode.Uri.file(t.file);
+        if (fs.statSync(t.file).isDirectory()) return void vscode.commands.executeCommand('revealInExplorer', uri);
+        const selection = t.line ? new vscode.Range(t.line - 1, 0, (t.endLine ?? t.line) - 1, 0) : undefined;
+        return void vscode.window.showTextDocument(uri, { preview: true, selection });
+      }
       case 'toggleBrowser':
         config.saveSettings({ browserTools: !config.settings.browserTools });
         if (config.settings.browserTools) registerAgyBrowser();
@@ -480,8 +580,35 @@ export function activate(context: vscode.ExtensionContext): void {
         return void addAccount(AGENT_KINDS.includes(m.kind) ? m.kind : undefined);
       case 'importLogins':
         return void vscode.commands.executeCommand('superAgent.importLogins');
+      case 'undoChanges':
+      case 'redoChanges': {
+        const found = eng.changesAt(m.threadId, m.at);
+        if (!found) return;
+        const redo = m.type === 'redoChanges';
+        void changes.undo(found.cwd, found.changes, redo).then((err) => {
+          if (err) void vscode.window.showWarningMessage(err);
+          else eng.markUndone(m.threadId, m.at, !redo);
+          pushState(); // also ends the button's busy state
+        });
+        return;
+      }
+      case 'openDiff': {
+        // The file before the turn (left, read-only copy) against how it is now (right).
+        const found = eng.changesAt(m.threadId, m.at);
+        if (!found || typeof m.path !== 'string' || !found.changes.files.some((f) => f.path === m.path)) return;
+        const now = path.join(found.cwd, m.path);
+        void changes.before(found.cwd, found.changes, m.path).then((old) => {
+          const left = path.join(paths.data, 'diff', `${found.changes.before.slice(0, 12)}-${found.changes.files.findIndex((f) => f.path === m.path)}-${path.basename(m.path)}`);
+          fs.mkdirSync(path.dirname(left), { recursive: true });
+          fs.writeFileSync(left, old ?? '');
+          const right = fs.existsSync(now) ? vscode.Uri.file(now) : vscode.Uri.file(left + '.deleted');
+          if (!fs.existsSync(now)) fs.writeFileSync(right.fsPath, '');
+          void vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(left), right, `${path.basename(m.path)} (before ↔ now)`, { preview: true });
+        });
+        return;
+      }
       case 'refreshUsage':
-        return void usage.refreshAll();
+        return void usage.refreshAll(true).finally(() => post({ type: 'usageRefreshed' }));
       case 'openFile':
         // Only files the user attached in this workspace.
         if (typeof m.path === 'string' && /[\\/]\.super-agent[\\/]attachments[\\/]/.test(m.path) && fs.existsSync(m.path))

@@ -2,10 +2,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Account, Autonomy } from '../types';
+import type { Account, AgentKind, Autonomy } from '../types';
 import { accountEnv, buildArgs, codexBrowser, commandLine, writeBrowserConfig, type RunMode } from './cli';
 import { log } from '../log';
-import { ANSI, AUTH_FAILED, RATE_LIMIT, killTree, renderAgyEvent, renderClaudeEvent, runAgent, type RunRequest, type RunResult } from './runner';
+import { ANSI, AUTH_FAILED, RATE_LIMIT, errorOf, killTree, renderAgyEvent, renderClaudeEvent, runAgent, type RunRequest, type RunResult } from './runner';
 
 /**
  * Hot agents: starting a CLI costs 2–4 s per message, so processes are kept running between turns.
@@ -44,6 +44,11 @@ interface TurnCtx {
   timedOut: boolean;
   sessionId?: string;
   resolve: (r: RunResult) => void;
+  /**
+   * Claude Code: our message isn't being worked on yet. It echoes each message as it starts on it
+   * (--replay-user-messages); turns that end before that (a queued background-task notice, say) aren't ours.
+   */
+  awaitingEcho?: boolean;
 }
 
 interface StreamProc {
@@ -58,6 +63,21 @@ interface StreamProc {
   lastUsed: number;
   buf: string;
   dead: boolean;
+  /** Runs an older CLI build (it was updated meanwhile): never reused, closed once its turn ends. */
+  stale?: boolean;
+  /** Output the agent produced on its own after its turn ended (a background task woke it), kept for `attach`. */
+  held?: string[];
+  /** Started background work (a background command or a Monitor): it may wake up by itself, so keep it open. */
+  background?: boolean;
+  /** Asked for a turn for the held output already (once until a turn takes it). */
+  woke?: boolean;
+}
+
+/** An agent that finished its turn started working again by itself (its background work woke it up). */
+export interface WakeEvent {
+  account: Account;
+  sessionId: string;
+  cwd: string;
 }
 
 interface CodexServer {
@@ -72,7 +92,14 @@ interface CodexServer {
   turns: Map<string, TurnCtx & { turnId?: string }>;
   buf: string;
   dead: boolean;
+  stale?: boolean;
 }
+
+/** The line that ends an agent's turn (Claude Code / Antigravity stream-json). */
+const isTurnEnd = (p: { account: Account }, line: string) => (p.account.kind === 'claude' ? renderClaudeEvent(line) : renderAgyEvent(line)).final !== undefined;
+/** A line where the agent acts (writes or uses a tool), as opposed to a status line. */
+const isActing = (p: { account: Account }, line: string) =>
+  p.account.kind === 'claude' ? /"type"\s*:\s*"assistant"/.test(line) : /"step_update"/.test(line) && /"text_delta"|"tool_name"/.test(line);
 
 const sig = (mode: RunMode, autonomy: Autonomy, account: Account, browser: boolean) => JSON.stringify([mode, autonomy, account.model ?? '', account.effort ?? '', browser]);
 
@@ -82,7 +109,14 @@ export class HotAgents {
   private byRun = new Map<string, () => void>();
   private steerable = new Map<string, (text: string, label: string) => Promise<boolean>>();
   private spareFailedAt = new Map<string, number>();
+  /** Codex servers replaced after a CLI update, still finishing a turn. */
+  private retired: CodexServer[] = [];
+  /** CLIs being updated: no new processes for them (they would lock the binary or run the old build). */
+  private paused = new Set<AgentKind>();
   private sweep = setInterval(() => this.closeIdle(), 5 * 60000);
+
+  /** Called once per wake-up; the engine answers by running an `attach` turn for that session. */
+  onWake?: (w: WakeEvent) => void;
 
   constructor(private dataDir: string) {}
 
@@ -112,15 +146,51 @@ export class HotAgents {
   /** Keeps every team member ready: a Codex server, or a spare Claude Code / Antigravity process. */
   warm(targets: WarmTarget[], o: WarmOptions): void {
     for (const { account, cliPath } of targets) {
+      if (this.paused.has(account.kind)) continue;
       if (account.kind === 'codex') void this.server(account, cliPath, o.cwd, o.browser);
       else this.ensureSpare(account, cliPath, o.cwd, 'write', o.autonomy, o.browser);
     }
   }
 
+  /** A CLI is about to be updated: close its idle processes and start no new ones until `resume`. */
+  pause(kind: AgentKind): void {
+    this.paused.add(kind);
+    this.restartKind(kind);
+  }
+
+  /** The update is done: anything started meanwhile (or still on the old build) is replaced as it frees up. */
+  resume(kind: AgentKind): void {
+    this.paused.delete(kind);
+    this.restartKind(kind);
+  }
+
+  /** Whether any turn of this CLI is running (background updates wait for none). */
+  busy(kind: AgentKind): boolean {
+    return this.streams.some((p) => p.account.kind === kind && !!p.turn) || [...this.servers.values(), ...this.retired].some((x) => x.account.kind === kind && x.turns.size > 0);
+  }
+
+  /**
+   * A CLI was updated: its processes run the old build. Idle ones close now; busy ones finish their turn first.
+   * The next run (or warm-up) starts the new build.
+   */
+  restartKind(kind: AgentKind): void {
+    for (const p of this.streams.filter((x) => x.account.kind === kind)) {
+      p.stale = true;
+      if (!p.turn) this.kill(p.child);
+    }
+    for (const [key, s] of [...this.servers].filter(([, x]) => x.account.kind === kind)) {
+      s.stale = true;
+      this.servers.delete(key);
+      if (s.turns.size) this.retired.push(s);
+      else this.kill(s.child);
+    }
+    log('hot', `restarting ${kind} processes (CLI update)`);
+  }
+
   dispose(): void {
     clearInterval(this.sweep);
     for (const p of this.streams) this.kill(p.child);
-    for (const s of this.servers.values()) this.kill(s.child);
+    for (const s of [...this.servers.values(), ...this.retired]) this.kill(s.child);
     this.streams = [];
     this.servers.clear();
   }
@@ -164,7 +234,8 @@ export class HotAgents {
     log('hot', `turn end on ${t.req.account.label}`, { run: t.req.runId, code, finalChars: finalText.length, rateLimited, authFailed, cancelled: t.cancelled, timedOut: t.timedOut });
     this.emit(t, `\n[super-agent] turn ended${rateLimited ? ' (rate limited)' : authFailed ? ' (account unavailable)' : failed ? ` (code ${code})` : ''}\n`);
     t.log.end();
-    t.resolve({ code, finalText, rateLimited, authFailed, authReason, cancelled: t.cancelled, timedOut: t.timedOut, sessionId: t.sessionId });
+    const error = failed && !t.cancelled ? errorOf(tail) : undefined;
+    t.resolve({ code, finalText, rateLimited, authFailed, authReason, error, cancelled: t.cancelled, timedOut: t.timedOut, sessionId: t.sessionId });
   }
 
   private kill(child: ChildProcess): void {
@@ -174,8 +245,9 @@ export class HotAgents {
   // ---------------------------------------------------------------- Claude Code / Antigravity (stream-json)
 
   private runStream(req: RunRequest): Promise<RunResult> {
+    if (req.attach) return this.attachStream(req);
     const key = sig(req.mode, req.autonomy, req.account, !!req.browser);
-    const fits = (p: StreamProc) => !p.dead && !p.turn && p.account.id === req.account.id && p.cwd === req.cwd && p.key === key;
+    const fits = (p: StreamProc) => !p.dead && !p.stale && !p.turn && p.account.id === req.account.id && p.cwd === req.cwd && p.key === key;
     let p = req.resume ? this.streams.find((x) => fits(x) && x.sessionId === req.resume) : this.streams.find((x) => fits(x) && x.spare);
     if (p?.spare) {
       p.spare = false;
@@ -191,15 +263,39 @@ export class HotAgents {
       t.sessionId = proc.sessionId;
       proc.turn = t;
       proc.lastUsed = Date.now();
+      // What it did on its own since its last reply belongs to this turn too (not that work's own end).
+      for (const line of this.takeHeld(proc)) if (!isTurnEnd(proc, line)) this.onStreamLine(proc, line);
       const message = { role: 'user', content: req.prompt };
+      if (req.account.kind === 'claude') t.awaitingEcho = true;
       const line = req.account.kind === 'claude' ? { type: 'user', message } : { event: 'user', message };
       proc.child.stdin?.write(JSON.stringify(line) + '\n');
     });
   }
 
+  /** Takes over the turn a woken-up agent is running by itself: no prompt, just its output from the start. */
+  private attachStream(req: RunRequest): Promise<RunResult> {
+    const proc = this.streams.find((x) => !x.dead && !x.turn && x.account.id === req.account.id && x.sessionId === req.resume);
+    if (!proc) return Promise.resolve({ code: null, finalText: '', sessionId: req.resume, rateLimited: false, cancelled: true, timedOut: false });
+    return new Promise((resolve) => {
+      const t = this.open(req, resolve, () => this.kill(proc.child));
+      t.sessionId = proc.sessionId;
+      proc.turn = t;
+      proc.lastUsed = Date.now();
+      for (const line of this.takeHeld(proc)) if (proc.turn === t) this.onStreamLine(proc, line);
+    });
+  }
+
+  private takeHeld(p: StreamProc): string[] {
+    const held = p.held ?? [];
+    p.held = undefined;
+    p.woke = false;
+    return held;
+  }
+
   private ensureSpare(account: Account, cliPath: string, cwd: string, mode: RunMode, autonomy: Autonomy, browser: boolean): void {
+    if (this.paused.has(account.kind)) return;
     const key = sig(mode, autonomy, account, browser);
-    if (this.streams.some((p) => !p.dead && p.spare && p.account.id === account.id && p.cwd === cwd && p.key === key)) return;
+    if (this.streams.some((p) => !p.dead && !p.stale && p.spare && p.account.id === account.id && p.cwd === cwd && p.key === key)) return;
     if (Date.now() - (this.spareFailedAt.get(account.id) ?? 0) < RETRY_SPARE_MS) return;
     // A spare for other settings (model changed, browser toggled) is no longer useful.
     for (const p of this.streams.filter((x) => x.spare && x.account.id === account.id)) this.kill(p.child);
@@ -219,7 +315,7 @@ export class HotAgents {
     }
     const args = buildArgs({ kind: account.kind, mode, autonomy, cwd, model: account.model, effort: account.effort, lastMessageFile: '', resume, newSessionId, browser: b });
     const child = claude
-      ? spawn(commandLine(cliPath, ['--input-format', 'stream-json', ...args]), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
+      ? spawn(commandLine(cliPath, ['--input-format', 'stream-json', '--replay-user-messages', ...args]), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
       : spawn(cliPath, [...args, '--input-format', 'stream-json', '-p='], { cwd, env: accountEnv(account), windowsHide: true });
     const p: StreamProc = { account, cwd, key: sig(mode, autonomy, account, browser), child, sessionId: resume ?? newSessionId, spare: false, startedAt: Date.now(), lastUsed: Date.now(), buf: '', dead: false };
     this.streams.push(p);
@@ -253,11 +349,16 @@ export class HotAgents {
   private onStreamLine(p: StreamProc, line: string): void {
     if (!p.sessionId) p.sessionId = /"conversation_id"\s*:\s*"([^"]+)"/.exec(line)?.[1];
     const t = p.turn;
-    if (!t) return;
+    if (!t) return this.onIdleLine(p, line);
+    if (/"name"\s*:\s*"Monitor"|"run_in_background"\s*:\s*true/.test(line)) p.background = true;
     t.sessionId ??= p.sessionId;
+    if (t.awaitingEcho && /"isReplay"\s*:\s*true/.test(line)) t.awaitingEcho = false; // it starts on our message now
     const r = p.account.kind === 'claude' ? renderClaudeEvent(line) : renderAgyEvent(line);
     this.emit(t, r.text);
     if (r.final === undefined) return; // not the end of the turn yet
+    // A turn Claude ran before getting to our message (e.g. a notice about a background task cut off by the restart).
+    // (An error still ends it: a failure must not leave the turn waiting.)
+    if (t.awaitingEcho && !/"is_error"\s*:\s*true/.test(line)) return log('hot', `${p.account.label}: a queued turn ended before ours; waiting for ours`, { run: t.req.runId });
     t.final = r.final;
     p.turn = undefined;
     p.lastUsed = Date.now();
@@ -265,14 +366,30 @@ export class HotAgents {
     this.trimIdle(p.account.id);
   }
 
-  /** Keeps the most recently used idle conversations per account; closes the rest. */
+  /**
+   * Output from an agent between turns: its background work woke it up and it carries on by itself. Keep it and ask
+   * for a turn to show it in (once, when it starts acting: status lines alone don't count).
+   */
+  private onIdleLine(p: StreamProc, line: string): void {
+    if (p.spare || !p.sessionId || !line.trim()) return;
+    p.held = [...(p.held ?? []), line].slice(-5000);
+    p.lastUsed = Date.now();
+    if (p.woke || !isActing(p, line)) return;
+    p.woke = true;
+    log('hot', `${p.account.label} woke up by itself (background work)`, { session: p.sessionId });
+    this.onWake?.({ account: p.account, sessionId: p.sessionId, cwd: p.cwd });
+  }
+
+  /** Keeps the most recently used idle conversations per account; closes the rest (not ones with background work). */
   private trimIdle(accountId: string): void {
-    const idle = this.streams.filter((p) => p.account.id === accountId && !p.spare && !p.turn).sort((a, b) => b.lastUsed - a.lastUsed);
+    const idle = this.streams.filter((p) => p.account.id === accountId && !p.spare && !p.turn && !p.background).sort((a, b) => b.lastUsed - a.lastUsed);
     for (const p of idle.slice(MAX_IDLE_SESSIONS)) this.kill(p.child);
   }
 
   private closeIdle(): void {
-    for (const p of this.streams) if (!p.spare && !p.turn && Date.now() - p.lastUsed > IDLE_MS) this.kill(p.child);
+    for (const p of this.streams) if ((p.stale || (!p.spare && Date.now() - p.lastUsed > IDLE_MS)) && !p.turn) this.kill(p.child);
+    for (const s of this.retired.filter((x) => !x.turns.size)) this.kill(s.child);
+    this.retired = this.retired.filter((x) => x.turns.size && !x.dead);
   }
 
   // ---------------------------------------------------------------- Codex (app-server)
@@ -398,7 +515,8 @@ export class HotAgents {
     switch (m.method) {
       case 'item/started':
         if (item.type === 'reasoning') this.emit(t, '\nthinking\n');
-        else if (item.type === 'agentMessage') this.emit(t, '\ncodex\n');
+        // Codex labels each message: commentary on the way, or the final answer (shown as the answer while it streams).
+        else if (item.type === 'agentMessage') this.emit(t, item.phase === 'final_answer' ? '\ncodex final\n' : '\ncodex\n');
         else if (item.type === 'commandExecution') this.emit(t, `\n→ run command ${unwrap(String(item.command ?? ''))}\n`);
         else if (item.type === 'fileChange') this.emit(t, `\n→ edit files ${(item.changes ?? []).map((c: any) => c.path).join(', ')}\n`);
         else if (item.type === 'mcpToolCall') this.emit(t, `\n→ ${item.server} ${item.tool ?? ''}\n`);
@@ -429,5 +547,5 @@ export class HotAgents {
 /** Shows the command itself, not the PowerShell wrapper Codex runs it in. */
 function unwrap(cmd: string): string {
   const m = /powershell(?:\.exe)?"?\s+-Command\s+(.*)$/is.exec(cmd);
-  return (m ? m[1] : cmd).replace(/^['"](.*)['"]$/s, '$1').replace(/\s+/g, ' ').slice(0, 200);
+  return (m ? m[1] : cmd).replace(/^['"](.*)['"]$/s, '$1').replace(/\s+/g, ' ').slice(0, 6000); // whole: the panel expands long ones
 }

@@ -1,5 +1,10 @@
 // Bundles the extension (Node) and the Team panel (browser).
 import { build } from 'esbuild';
+import fs from 'node:fs';
+
+// The mic recorder's native library: it loads from ../lib next to the bundled extension (dist/).
+fs.rmSync('lib', { recursive: true, force: true });
+fs.cpSync('node_modules/@picovoice/pvrecorder-node/lib/windows', 'lib/windows', { recursive: true });
 
 await build({
   entryPoints: ['src/extension.ts'],

@@ -102,7 +102,6 @@ flowchart LR
 | `/new` | start a new thread |
 | `/threads` | recent threads (switch with `/use N`) |
 | `/stop` | stop the current thread |
-| `/status` | team and usage |
 
 ## Usage, always visible
 
@@ -115,7 +114,7 @@ Claude Code · work        Codex · personal
 
 - Usage left for every account, for both the 5-hour and the weekly window.
 - When each limit resets.
-- The same numbers in the status bar tooltip and in Telegram's `/status`.
+- The same numbers in the status bar tooltip.
 
 ## Built for VS Code
 

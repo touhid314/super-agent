@@ -49,8 +49,6 @@ export interface RelayDeps {
   attachmentDir(): string | undefined;
   /** Model name for an account, e.g. "Opus 5.5". */
   agentName(accountId?: string): string;
-  /** One-line-per-agent team summary for /status. */
-  status(): string;
   /** /team: list and change who's on the team, the lead, and models. */
   team: Omit<TeamDeps, 'api'>;
   log(line: string): void;
@@ -73,7 +71,6 @@ const HELP = [
   '/new: start a new thread',
   '/threads: recent threads (switch with /use N)',
   '/stop: stop the current thread',
-  '/status: team and usage',
 ].join('\n');
 
 interface TgCallback {
@@ -174,7 +171,6 @@ export class TelegramRelay {
         { command: 'new', description: 'Start a new thread' },
         { command: 'threads', description: 'Recent threads' },
         { command: 'stop', description: 'Stop the current thread' },
-        { command: 'status', description: 'Team and usage' },
         { command: 'help', description: 'How this works' },
       ],
     }).catch(() => undefined);
@@ -328,7 +324,6 @@ export class TelegramRelay {
         this.d.engine.stop(t.id);
         return void (await this.reply(chat, 'Stopped.'));
       }
-      if (name === 'status') return void (await this.reply(chat, this.d.status()));
       if (name === 'team' || name === 'agents') return void (await this.team.open(chat));
       if (name === 'files' || name === 'ls') return void (await this.files.open(chat));
       if (name === 'recent') return void (await this.files.recent(chat));

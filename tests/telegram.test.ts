@@ -63,7 +63,6 @@ function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-'))) {
     cwd: () => cwd,
     attachmentDir: () => cwd,
     agentName: () => 'Opus 9',
-    status: () => 'Opus 9 · 5h 80% left',
     team: { members: () => [], toggle: () => undefined, makeLead: () => undefined, models: async () => [], setModel: () => undefined },
     log: () => undefined,
     onChange: () => undefined,
@@ -125,6 +124,25 @@ describe('Telegram relay', () => {
     expect(shown.relay.chatId).toBe(5);
     expect(shown.relay.pairCode).toBeUndefined();
     polling.relay.stop();
+  });
+
+  it('turning it off and on again keeps the pairing, and sends nothing while off', async () => {
+    const h = setup();
+    h.relay.start('123:token');
+    h.tg.say(7, `/start ${h.relay.pairCode}`);
+    await h.until(() => h.relay.state === 'on');
+    h.relay.stop(); // one tap off
+    expect(h.relay.state).toBe('off');
+    const t = h.engine.send(undefined, 'work while Telegram is off', h.dir);
+    await h.until(() => t.status === 'idle' && t.messages.some((m) => m.role === 'agent'));
+    const sent = h.tg.sent.length;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.tg.sent.length).toBe(sent); // nothing streamed to the chat
+    h.relay.start('123:token'); // one tap on: no new pairing
+    expect(h.relay.state).toBe('on');
+    expect(h.relay.chatId).toBe(7);
+    expect(h.relay.pairCode).toBeUndefined();
+    h.relay.stop();
   });
 
   it('splits long replies to fit Telegram messages', () => {

@@ -27,3 +27,5 @@ Thumbs.db
 
 # Speed-test build output
 evaluation/.out/
+# Native libraries copied by build.mjs
+/lib/

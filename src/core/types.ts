@@ -35,6 +35,8 @@ export interface UsageWindow {
   label: string;
   percent: number;
   resetsAt?: number;
+  /** A limit for models this account isn't using (Antigravity's model groups): shown, but not counted as its load. */
+  other?: boolean;
 }
 
 export interface AccountUsage {
@@ -65,6 +67,10 @@ export interface Settings {
   browserTools: boolean;
   /** Keep agent CLIs running between messages (no startup lag); false: start a fresh process per turn. */
   hotAgents?: boolean;
+  /** Keep the agent CLIs up to date in the background (each with its own updater); on by default. */
+  autoUpdateClis?: boolean;
+  /** Whisper model for voice input (whisper.cpp's ggml names: tiny.en, base.en, small.en, …); default base.en. */
+  voiceModel?: string;
   maxFixAttempts: number;
   taskTimeoutMin: number;
   verifyTimeoutMin: number;

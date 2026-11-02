@@ -1,17 +1,18 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AccountPool } from '../src/core/agents/pool';
 import type { RunRequest, RunResult } from '../src/core/agents/runner';
 import type { Account } from '../src/core/types';
-import { Engine } from '../src/engine/engine';
+import { ChangeTracker } from '../src/engine/changes';
+import { Engine, type EngineDeps } from '../src/engine/engine';
 import type { Thread } from '../src/engine/types';
 
 const acc = (id: string, kind: Account['kind'] = 'codex', role: Account['role'] = 'worker'): Account => ({ id, kind, label: id, home: null, role, createdAt: 0 });
 const ok = (text: string, sessionId: string): RunResult => ({ code: 0, finalText: text, sessionId, rateLimited: false, cancelled: false, timedOut: false });
 
-function setup(accounts: Account[], agent: (req: RunRequest, n: number) => Promise<RunResult>) {
+function setup(accounts: Account[], agent: (req: RunRequest, n: number) => Promise<RunResult>, deps: Partial<EngineDeps> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-ext-'));
   const cwd = path.join(dir, 'proj');
   fs.mkdirSync(cwd);
@@ -39,6 +40,7 @@ function setup(accounts: Account[], agent: (req: RunRequest, n: number) => Promi
     onChange: () => undefined,
     onOutput: () => undefined,
     onFinished: (t) => finished.push(t.title),
+    ...deps,
   });
   const idle = async (pred: () => boolean = () => engine.threads.every((t) => t.status === 'idle')) => {
     for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
@@ -60,6 +62,58 @@ describe('lead works itself and keeps its context', () => {
     expect(h.runs[1].resume).toBe('sess-1'); // exact context: same CLI session
     expect(msgs(t, 'agent')).toEqual(['answer 1', 'answer 2']);
     expect(h.finished).toHaveLength(2); // chime + notification each time
+  });
+});
+
+describe('changes each turn made', () => {
+  it('puts the files a turn changed (+/-) on its answer, and only when something changed', async () => {
+    const h = setup(
+      [acc('a', 'codex', 'master')],
+      async (req, n) => {
+        if (n === 1) fs.writeFileSync(path.join(req.cwd, 'out.py'), 'print(1)\nprint(2)\n');
+        return ok(`answer ${n}`, 's');
+      },
+      { changes: new ChangeTracker(fs.mkdtempSync(path.join(os.tmpdir(), 'sa-snap-'))) },
+    );
+    fs.writeFileSync(path.join(h.cwd, 'keep.txt'), 'already here\n');
+    const t = h.engine.send(undefined, 'write out.py', h.cwd);
+    await h.idle(() => !!t.messages.at(-1)?.changes);
+    expect(t.messages.at(-1)).toMatchObject({ role: 'agent', text: 'answer 1', changes: { files: [{ path: 'out.py', add: 2, del: 0 }] } });
+    h.engine.send(t.id, 'just answer', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 2);
+    await new Promise((r) => setTimeout(r, 1500)); // the diff runs after the answer is in
+    expect(t.messages.at(-1)?.changes).toBeUndefined();
+  }, 30000);
+});
+
+describe('out-of-date CLI', () => {
+  it('shows the error, updates the CLI, and runs the turn again on the same agent', async () => {
+    const updates: string[] = [];
+    const tooOld = "Claude Code 1.0 does not support this model; version 2.0 or newer is required. Run 'claude update'";
+    const h = setup(
+      [acc('c', 'claude', 'master'), acc('x', 'codex')],
+      async (req, n) => (n === 1 ? { code: 1, finalText: '', error: tooOld, rateLimited: false, cancelled: false, timedOut: false } : ok('fixed', 's')),
+      { updateCli: async (k) => (updates.push(k), { ok: true, from: '1.0', to: '2.0' }) },
+    );
+    const t = h.engine.send(undefined, 'do it', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length > 0);
+    expect(updates).toEqual(['claude']);
+    expect(h.runs.map((r) => r.account.id)).toEqual(['c', 'c']);
+    expect(msgs(t, 'system').join(' | ')).toContain(`c failed: ${tooOld}`);
+    expect(msgs(t, 'system').join(' | ')).toContain('Claude Code updated (1.0 → 2.0). Trying again.');
+    expect(msgs(t, 'agent')).toEqual(['fixed']);
+  });
+
+  it('when the update fails, says how to fix it and hands the turn to another kind of agent', async () => {
+    const h = setup(
+      [acc('c', 'claude', 'master'), acc('x', 'codex')],
+      async (req) => (req.account.id === 'c' ? { code: 1, finalText: '', error: 'Upgrade required', rateLimited: false, cancelled: false, timedOut: false } : ok('done by codex', 's')),
+      { updateCli: async () => ({ ok: false, error: 'access denied' }) },
+    );
+    const t = h.engine.send(undefined, 'do it', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length > 0);
+    expect(msgs(t, 'system').join(' | ')).toContain("Couldn't update Claude Code: access denied. Run `claude update` in a terminal. x takes over meanwhile.");
+    expect(msgs(t, 'agent')).toEqual(['done by codex']);
   });
 });
 
@@ -86,7 +140,7 @@ describe('seamless hand-over when usage runs out', () => {
     expect(h.runs[1].prompt).toContain('Context hand-over');
     expect(h.runs[1].prompt).toContain('refactor the parser');
     expect(h.runs[1].prompt).toContain('taking over mid-task');
-    expect(msgs(t, 'system').join(' ')).toMatch(/a ran out of usage, so c takes over/);
+    expect(msgs(t, 'system').join(' ')).toContain('a is out of usage: c takes over as the lead, with the full context.');
     expect(h.pool.get('a').cooldownUntil).toBeGreaterThan(Date.now());
     expect(t.session).toEqual({ accountId: 'c', kind: 'claude', id: 'sc' });
   });
@@ -410,5 +464,285 @@ describe('a lone agent', () => {
     h.engine.send(undefined, 'build it', h.cwd);
     await h.idle();
     expect(h.runs[0].prompt).toBe('build it');
+  });
+});
+
+describe('conversations are kept on disk', () => {
+  const deps = (dataDir: string): EngineDeps => ({
+    config: { accounts: [acc('a', 'codex', 'master')], settings: { taskTimeoutMin: 5 } } as never,
+    pool: new AccountPool(),
+    dataDir,
+    cliPath: () => 'fake',
+    runAgent: async () => ok('the answer', 's1'),
+    cancelRun: () => undefined,
+    usageLoad: () => 0,
+    usageResetAt: () => undefined,
+    autonomy: () => 'standard',
+    onChange: () => undefined,
+    onOutput: () => undefined,
+    onFinished: () => undefined,
+  });
+  const until = async (pred: () => boolean) => {
+    for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
+  };
+
+  it('every thread comes back after a restart, even changes made just before it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-keep-'));
+    const cwd = path.join(dir, 'proj');
+    fs.mkdirSync(cwd);
+    const e1 = new Engine(deps(dir));
+    const t = e1.send(undefined, 'remember me', cwd);
+    await until(() => msgs(t, 'agent').length > 0);
+    for (let i = 0; i < 250; i++) e1.newThread(cwd); // more than the old 200-thread cap
+    e1.dispose(); // VS Code reloads before the delayed save runs
+    const e2 = new Engine(deps(dir));
+    expect(e2.threads).toHaveLength(251);
+    expect(e2.get(t.id)?.messages.map((m) => m.text)).toEqual(['remember me', 'the answer']);
+  });
+
+  it('starts with a thread that was mid-run when VS Code closed, without calling back into the host', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-keep-'));
+    const saved = [{ id: 't1', title: 'busy one', cwd: dir, status: 'working', queue: [], messages: [{ at: 1, role: 'user', text: 'go' }], createdAt: 1, updatedAt: 1 }];
+    fs.writeFileSync(path.join(dir, 'vscode-threads.json'), JSON.stringify(saved));
+    // Like the extension: its change handler can't run until the engine exists.
+    const e = new Engine({ ...deps(dir), onChange: () => { throw new ReferenceError("Cannot access 'eng' before initialization"); } });
+    expect(e.get('t1')?.status).toBe('idle');
+    expect(e.get('t1')?.messages.map((m) => m.text)).toEqual(['go', 'Interrupted (VS Code was closed). Send "continue" to pick up from where it stopped.']);
+  });
+
+  it("deleting a conversation also deletes its helpers' threads (and theirs)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-keep-'));
+    const e = new Engine(deps(dir));
+    const lead = e.newThread(dir);
+    const other = e.newThread(dir);
+    const mk = (id: string, parentId: string) => ({ id, title: id, cwd: dir, status: 'idle' as const, queue: [], messages: [], parentId, helperFile: 'h.md', createdAt: 1, updatedAt: 1 });
+    e.threads.push(mk('h1', lead.id), mk('h2', 'h1'), mk('x1', other.id));
+    e.deleteThread(lead.id);
+    expect(e.threads.map((t) => t.id).sort()).toEqual([other.id, 'x1'].sort());
+  });
+
+  it('"last used" is the last message from you or an agent, not a status note', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-keep-'));
+    const msgs = [{ at: 100, role: 'user', text: 'go' }, { at: 200, role: 'agent', text: 'done' }, { at: 900, role: 'system', text: 'Stopped.' }];
+    fs.writeFileSync(path.join(dir, 'vscode-threads.json'), JSON.stringify([{ id: 't1', title: 'x', cwd: dir, status: 'working', queue: [], messages: msgs, createdAt: 50, updatedAt: 900 }]));
+    const e = new Engine(deps(dir));
+    expect(e.get('t1')?.updatedAt).toBe(200); // neither the old note nor the new "Interrupted" one counts
+  });
+
+  it('work cut off by a reload keeps its steps ("Worked for …"), and "continue" carries on from them', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-keep-'));
+    const cwd = path.join(dir, 'proj');
+    fs.mkdirSync(cwd);
+    // First session: the agent is mid-way when VS Code reloads (its run never finishes here).
+    const e1 = new Engine({
+      ...deps(dir),
+      runAgent: (req) => {
+        req.onText("I'll split the parser.\n\n→ Edit src/parser.py\n\n→ Bash pytest -q\n");
+        return new Promise(() => undefined);
+      },
+    });
+    const t = e1.send(undefined, 'refactor the parser', cwd);
+    await until(() => (t.work?.items.length ?? 0) > 0 || !!e1.liveActivity(t.id).length);
+    await new Promise((r) => setTimeout(r, 50));
+    e1.dispose(); // reload: the work so far is saved
+
+    // After the reload: the cut-off turn shows what it did, with how long it worked.
+    const runs: RunRequest[] = [];
+    const e2 = new Engine({ ...deps(dir), config: { accounts: [acc('a', 'codex', 'master'), acc('c', 'claude')], settings: { taskTimeoutMin: 5 } } as never, runAgent: async (req) => (runs.push(req), ok('finished', 's2')) });
+    const cut = e2.get(t.id)!.messages.at(-1)!;
+    expect(cut.text).toMatch(/^Interrupted/);
+    expect(cut.activity).toEqual(["💬 I'll split the parser.\n", '🔧 Edit src/parser.py', '🔧 Bash pytest -q']);
+    expect(cut.workedMs).toBeGreaterThanOrEqual(0);
+
+    // "continue" on another agent: it is told exactly where things stood.
+    e2.setLead(t.id, 'c');
+    e2.send(t.id, 'continue', cwd);
+    await until(() => runs.length > 0);
+    expect(runs[0].account.id).toBe('c');
+    expect(runs[0].prompt).toContain("- I'll split the parser.\n- Edit src/parser.py\n- Bash pytest -q");
+    expect(runs[0].prompt).toContain('continue');
+  });
+
+  it('an unreadable file is set aside (never overwritten) and the backup is used', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-keep-'));
+    const cwd = path.join(dir, 'proj');
+    fs.mkdirSync(cwd);
+    const e1 = new Engine(deps(dir));
+    const t = e1.send(undefined, 'precious', cwd);
+    await until(() => msgs(t, 'agent').length > 0);
+    e1.dispose();
+    new Engine(deps(dir)).dispose(); // next session start: backs up the good file
+    fs.writeFileSync(path.join(dir, 'vscode-threads.json'), '[{"id": "broken'); // crash mid-write
+    const e3 = new Engine(deps(dir));
+    expect(e3.get(t.id)?.messages[0].text).toBe('precious');
+    expect(fs.readdirSync(dir).some((f) => f.startsWith('vscode-threads.json.corrupt-'))).toBe(true);
+  });
+});
+
+describe('out of usage with nobody else on the team', () => {
+  const outOfUsage = (req: RunRequest): RunResult => {
+    req.onText("I'll move the helpers into src/.\n\n→ Edit src/app.py\n\n→ Bash pytest -q\n");
+    return { code: 1, finalText: '', sessionId: 'sc', rateLimited: true, cancelled: false, timedOut: false };
+  };
+
+  it('the added account with the most usage left takes over (off the team), with a clean hand-over', async () => {
+    const load: Record<string, number> = { c: 0, x1: 70, x2: 20 };
+    const h = setup(
+      [acc('c', 'claude', 'master'), acc('x1', 'codex', 'off'), acc('x2', 'codex', 'off')],
+      async (req) => (req.account.id === 'c' ? outOfUsage(req) : ok('finished it', 'sx')),
+      { usageLoad: (id) => load[id] ?? 0 },
+    );
+    const t = h.engine.send(undefined, 'reorganize the repo', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length > 0);
+    expect(h.runs.map((r) => r.account.id)).toEqual(['c', 'x2']); // most usage left
+    expect(msgs(t, 'system').join(' ')).toContain('c is out of usage: x2 takes over as the lead, with the full context.');
+    expect(h.engine['d'].config.accounts.map((a: Account) => [a.id, a.role])).toEqual([['c', 'worker'], ['x1', 'off'], ['x2', 'master']]); // the crown moved
+    const brief = h.runs[1].prompt;
+    expect(brief).toContain('reorganize the repo');
+    expect(brief).toContain('The previous agent stopped in the middle of this request');
+    expect(brief).toMatch(/- I'll move the helpers into src\/\.\n- Edit src\/app\.py\n- Bash pytest -q/);
+    expect(msgs(t, 'agent')).toEqual(['finished it']);
+    // The next message stays with the stand-in while the team is still out.
+    h.engine.send(t.id, 'and update the README', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length > 1);
+    expect(h.runs[2].account.id).toBe('x2');
+  });
+
+  it('a message to a thread whose lead is already out says who carries on', async () => {
+    const load: Record<string, number> = { c: 0, x: 30 };
+    const h = setup([acc('c', 'claude', 'master'), acc('x', 'antigravity', 'off')], async (req) => ok(`done by ${req.account.id}`, 's'), { usageLoad: (id) => load[id] ?? 0 });
+    const t = h.engine.send(undefined, 'first', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 1);
+    load.c = 100; // the lead runs out between messages (e.g. found on reload)
+    h.engine.send(t.id, 'continue', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 2);
+    expect(msgs(t, 'agent')).toEqual(['done by c', 'done by x']);
+    expect(msgs(t, 'system').join(' ')).toContain('c is out of usage: x takes over as the lead, with the full context.');
+  });
+
+  it('says so when the next message goes to another team member because the lead is out', async () => {
+    const load: Record<string, number> = { c: 0, k: 10 };
+    const h = setup([acc('c', 'claude', 'master'), acc('k', 'codex')], async (req) => ok(`done by ${req.account.id}`, 's'), { usageLoad: (id) => load[id] ?? 0 });
+    const t = h.engine.send(undefined, 'first', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 1);
+    load.c = 100;
+    h.engine.send(t.id, 'continue', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 2);
+    expect(msgs(t, 'agent')).toEqual(['done by c', 'done by k']);
+    expect(msgs(t, 'system').filter((m) => m.includes('is out of usage'))).toEqual(['c is out of usage: k takes over as the lead, with the full context.']);
+  });
+
+  it('the lead passes once to the agent taking over, which then stays the lead', async () => {
+    const load: Record<string, number> = { c: 0, x: 30 };
+    const h = setup([acc('c', 'claude', 'master'), acc('x', 'antigravity', 'off')], async (req) => ok(`done by ${req.account.id}`, 's'), { usageLoad: (id) => load[id] ?? 0 });
+    const t = h.engine.send(undefined, 'first', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 1);
+    // Another agent was already on it (e.g. it took over before this note existed), with no note in the thread.
+    t.leadId = 'x';
+    load.c = 100;
+    const note = 'c is out of usage: x takes over as the lead, with the full context.';
+    h.engine.send(t.id, 'continue', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 2);
+    h.engine.send(t.id, 'and then?', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 3);
+    expect(msgs(t, 'system').filter((m) => m === note)).toHaveLength(1); // said once, not on every message
+    load.c = 0; // the old lead has usage again: the new lead keeps leading (the crown moved)
+    h.engine.send(t.id, 'next', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length === 4);
+    expect(msgs(t, 'agent').at(-1)).toBe('done by x');
+  });
+
+  it("an off-team account isn't used while the team is merely busy", async () => {
+    let release!: () => void;
+    const h = setup([acc('c', 'claude', 'master'), acc('x', 'codex', 'off')], (req) =>
+      req.prompt.includes('first') ? new Promise((r) => (release = () => r(ok('done 1', 's1')))) : Promise.resolve(ok('done 2', 's2')),
+    );
+    h.engine.send(undefined, 'first task', h.cwd);
+    await h.idle(() => h.runs.length === 1);
+    const t2 = h.engine.send(undefined, 'second task', h.cwd);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.runs.map((r) => r.account.id)).toEqual(['c']); // waits for the team
+    release();
+    await h.idle(() => msgs(t2, 'agent').length > 0);
+    expect(h.runs.map((r) => r.account.id)).toEqual(['c', 'c']);
+  });
+});
+
+describe('every agent out of usage: the work resumes by itself', () => {
+  afterEach(() => vi.useRealTimers());
+  const limited = (): RunResult => ({ code: 1, finalText: '', sessionId: 'sc', rateLimited: true, cancelled: false, timedOut: false });
+
+  it('waits for the soonest reset, then the agent back first carries on where it stopped', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = Date.now();
+    const resets: Record<string, number> = { c: t0 + 3 * 3600000, x: t0 + 2 * 3600000 };
+    let spent = false;
+    const h = setup(
+      [acc('c', 'claude', 'master'), acc('x', 'codex', 'off')],
+      async (req) => {
+        if (!spent) {
+          spent = true;
+          req.onText('→ Edit src/app.py\n');
+          return limited();
+        }
+        return ok(`done by ${req.account.id}`, 's2');
+      },
+      {
+        // Out until each one's reset time (x is already out; c runs out on its first turn).
+        usageLoad: (id) => (id === 'x' || spent) && Date.now() < resets[id] ? 100 : 0,
+        usageResetAt: (id) => resets[id],
+      },
+    );
+    const t = h.engine.send(undefined, 'big refactor', h.cwd);
+    await h.idle(() => t.status === 'waiting');
+    expect(t.resumeAt).toBe(resets.x);
+    expect(msgs(t, 'system').at(-1)).toMatch(/^Every agent is out of usage\. x gets usage back at .+: the task resumes on it automatically then\.$/);
+    await vi.advanceTimersByTimeAsync(2 * 3600000 - 60000);
+    expect(h.runs).toHaveLength(1); // not before the reset
+    await vi.advanceTimersByTimeAsync(2 * 60000);
+    await h.idle(() => msgs(t, 'agent').length > 0);
+    expect(h.runs.map((r) => r.account.id)).toEqual(['c', 'x']);
+    expect(msgs(t, 'system')).toContain('x has usage again: resuming the task where it stopped.');
+    expect(h.runs[1].prompt).toContain('Edit src/app.py'); // with what was done so far
+    expect(msgs(t, 'agent')).toEqual(['done by x']);
+    expect(t.resumeAt).toBeUndefined();
+  });
+
+  it('with no reset time known, checks again regularly (asking for fresh usage numbers)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let out = true;
+    const refreshed: string[] = [];
+    const h = setup([acc('c', 'claude', 'master')], async () => (out ? limited() : ok('finished', 's')), {
+      usageLoad: () => (out ? 100 : 0),
+      refreshUsage: async (id) => void refreshed.push(id),
+    });
+    const t = h.engine.send(undefined, 'task', h.cwd);
+    await h.idle(() => t.status === 'waiting');
+    expect(msgs(t, 'system').at(-1)).toContain('no reset time is known: checking again every 20 minutes');
+    await vi.advanceTimersByTimeAsync(21 * 60000);
+    expect(refreshed).toContain('c');
+    expect(t.status).toBe('waiting'); // still out
+    out = false; // the next check finds usage again
+    await vi.advanceTimersByTimeAsync(21 * 60000);
+    await h.idle(() => msgs(t, 'agent').length > 0);
+    expect(msgs(t, 'agent')).toEqual(['finished']);
+  });
+
+  it('a usage refresh that shows usage back resumes at once; a reload keeps the work waiting', async () => {
+    let load = 100;
+    const h = setup([acc('c', 'claude', 'master')], async () => (load >= 100 ? limited() : ok('finished', 's')), { usageLoad: () => load, usageResetAt: () => Date.now() + 3600000 });
+    const t = h.engine.send(undefined, 'task', h.cwd);
+    await h.idle(() => t.status === 'waiting');
+    h.engine.dispose();
+    // Next session (VS Code reloaded): the thread is still waiting, and runs once usage is back.
+    const runs: string[] = [];
+    const e2 = new Engine({ ...h.engine['d'], runAgent: async (req: RunRequest) => (runs.push(req.account.id), ok('finished', 's')) });
+    const t2 = e2.get(t.id)!;
+    expect(t2.status).toBe('waiting');
+    load = 0;
+    e2.usageChanged();
+    for (let i = 0; i < 100 && !msgs(t2, 'agent').length; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(msgs(t2, 'agent')).toEqual(['finished']);
+    e2.dispose();
   });
 });

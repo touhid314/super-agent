@@ -20,6 +20,11 @@ export interface RunRequest {
   resume?: string;
   /** Give the agent a browser; its screenshots go to <cwd>/.super-agent/screenshots. */
   browser?: boolean;
+  /**
+   * Don't send a prompt: take over the turn the agent (session `resume`) started by itself, e.g. when one of its
+   * background tasks woke it up after its last reply (hot agents only).
+   */
+  attach?: boolean;
 }
 
 export interface RunResult {
@@ -32,6 +37,8 @@ export interface RunResult {
   authFailed?: boolean;
   /** The provider's own explanation, when it gave one. */
   authReason?: string;
+  /** For a failed run: the CLI's own error message, when it printed one. */
+  error?: string;
   cancelled: boolean;
   timedOut: boolean;
 }
@@ -39,7 +46,9 @@ export interface RunResult {
 /** The account can't be used right now (logged out, expired, or no longer eligible for this CLI). */
 export const AUTH_FAILED =
   /please (run )?\/?login|not logged in|log ?in required|authentication (failed|cancelled|required)|set an auth method|invalid api key|invalid_grant|token (has )?expired|unauthorized|\b401\b|IneligibleTier|no longer supported|not eligible|account (is )?(disabled|suspended)/i;
-export const RATE_LIMIT = /rate.?limit|usage limit|quota (exceeded|exhausted)|too many requests|\b429\b|hit your (usage )?limit|resource.?exhausted/i;
+/** Out of usage, in any provider's wording ("You've hit your 5-hour limit", "weekly limit reached", "out of credits", …). */
+export const RATE_LIMIT =
+  /rate.?limit|usage limit|quota (exceeded|exhausted)|too many requests|\b429\b|hit your [\w\s-]{0,24}limit|(5-hour|five.hour|daily|weekly|monthly|session) limit (reached|exceeded|hit)|limit (reached|exceeded)[^\n]{0,40}reset|out of (usage|credits)|resource.?exhausted/i;
 // eslint-disable-next-line no-control-regex
 export const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
 
@@ -173,12 +182,24 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
         : undefined;
       emit(`\n[super-agent] exited with code ${code}${rateLimited ? ' (rate limited)' : authFailed ? ' (account unavailable)' : ''}\n`);
       log.end();
-      resolve({ code, finalText, rateLimited, authFailed, authReason, cancelled: entry.cancelled, timedOut, sessionId: sessionOf(req, raw, newSessionId) });
+      const error = failed && !entry.cancelled ? errorOf(tail) : undefined;
+      resolve({ code, finalText, rateLimited, authFailed, authReason, error, cancelled: entry.cancelled, timedOut, sessionId: sessionOf(req, raw, newSessionId) });
     });
 
     child.stdin?.on('error', () => undefined);
     child.stdin?.end(agy ? '' : req.prompt, 'utf8');
   });
+}
+
+/** The CLI's own error message in a failed run's output (the provider's `"message"` when it's an API error). */
+export function errorOf(tail: string): string | undefined {
+  const line = tail
+    .split(/\r?\n/)
+    .reverse()
+    .find((l) => /error/i.test(l) && !/^\s+at /.test(l) && !l.startsWith('[super-agent]'));
+  if (!line) return undefined;
+  const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(line)?.[1];
+  return (msg ? msg.replace(/\\"/g, '"') : line.replace(/^.*?(Error:|error:)\s*/, '')).trim().slice(0, 300) || undefined;
 }
 
 /** Turn one Antigravity (agy) stream-json line into readable console text. */
@@ -246,15 +267,22 @@ export function renderClaudeEvent(line: string): { text: string; final?: string 
 /** The file, command or query an Antigravity step acts on (its parameters use PascalCase names). */
 function agyDetail(s: any): string {
   const p = s.tool_info?.parameters ?? {};
-  const v = p.CommandLine ?? p.AbsolutePath ?? p.TargetFile ?? p.FilePath ?? p.DirectoryPath ?? p.SearchPath ?? p.Query ?? p.Url ?? s.command ?? s.path ?? s.file_path ?? s.title ?? '';
-  return String(v).replace(/\s+/g, ' ').slice(0, 160);
+  const v =
+    p.CommandLine ?? p.Path ?? p.AbsolutePath ?? p.TargetFile ?? p.FilePath ?? p.DirectoryPath ?? p.SearchPath ?? p.Query ?? p.Pattern ?? p.Url ??
+    s.command ?? s.path ?? s.file_path ?? s.title ??
+    // A tool we don't know yet: its first short text parameter.
+    Object.values(p).find((x) => typeof x === 'string' && x.length < 300) ?? '';
+  return oneLine(v);
 }
 
-function describeTool(input: any): string {
+/** The file, command or query a Claude Code tool call acts on: whole (the panel shows long ones on click). */
+export function describeTool(input: any): string {
   if (!input || typeof input !== 'object') return '';
-  const v = input.file_path ?? input.path ?? input.command ?? input.pattern ?? input.url ?? '';
-  return String(v).replace(/\s+/g, ' ').slice(0, 160);
+  return oneLine(input.file_path ?? input.path ?? input.command ?? input.pattern ?? input.url ?? '');
 }
+
+/** A tool's target on one activity line, in full (only an absurdly long one is cut). */
+const oneLine = (v: unknown) => String(v).replace(/\s+/g, ' ').slice(0, 6000);
 
 /** Which CLI session a run used, so the next turn (or the next agent) can continue it. */
 function sessionOf(req: RunRequest, raw: string, newSessionId: string): string | undefined {

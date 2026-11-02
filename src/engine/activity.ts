@@ -11,6 +11,8 @@ export class ActivityParser {
   private mode: 'say' | 'skip' | 'cmd' = 'say';
   /** The last item is narration still being written (merge mode appends to it). */
   private saying = false;
+  /** The agent said this is its final answer (Codex's phase), not commentary: items get 🏁 instead of 💬. */
+  private final = false;
 
   constructor(
     private maxLen = 110,
@@ -39,7 +41,7 @@ export class ActivityParser {
     }
     // Codex block headers.
     if (line === 'user' || line === 'tokens used') return void (this.mode = 'skip');
-    if (line === 'codex') return void ((this.mode = 'say'), (this.saying = false));
+    if (line === 'codex' || line === 'codex final') return void ((this.mode = 'say'), (this.saying = false), (this.final = line === 'codex final'));
     if (line === 'exec') return void (this.mode = 'cmd');
     if (line === 'thinking') return this.push('💭 thinking…'), void (this.mode = 'skip');
     if (/^(apply_patch|file update)/.test(line)) return this.push('✏️ editing files'), void (this.mode = 'skip');
@@ -64,13 +66,14 @@ export class ActivityParser {
       const i = this.items.length - 1;
       this.items[i] = clip(`${this.items[i]}\n${raw.trimEnd()}`, this.maxLen);
     } else {
-      this.push(`💬 ${raw.trimEnd()}`);
+      this.push(`${this.final ? '🏁' : '💬'} ${raw.trimEnd()}`);
       this.saying = true;
     }
   }
 
   private push(item: string): void {
     this.saying = false;
+    if (!item.startsWith('🏁')) this.final = false;
     const short = clip(item, this.maxLen);
     if (this.items.at(-1) === short) return;
     this.items.push(short);

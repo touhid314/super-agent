@@ -1,9 +1,11 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Account, AccountUsage, JobState, UsageWindow } from '../types';
 import type { ConfigStore } from '../store/config';
 import { log } from '../log';
+import { accountEnv, commandLine, resolveCli } from './cli';
 
 const HOME = os.homedir();
 const CLAUDE_MIN_INTERVAL_MS = 2 * 60000;
@@ -13,7 +15,7 @@ const CLAUDE_BACKOFF_MS = 10 * 60000;
  * Usage limits per account.
  * - Codex: the latest `rate_limits` event in the account's own session logs (no network; as of its last run).
  * - Claude: the same OAuth usage endpoint Claude Code's /usage screen reads, with the account's own login.
- * - Antigravity: the CLI does not expose quota, so only the runs Super-Agent made today are shown.
+ * - Antigravity: the CLI's own `/usage` command (local, no model call): per model group, 5-hour and weekly limits.
  */
 export class UsageService {
   private usage = new Map<string, AccountUsage>();
@@ -35,17 +37,19 @@ export class UsageService {
   /** Highest usage across an account's windows (0-100); unknown = 0. */
   load(id: string): number {
     const u = this.usage.get(id);
-    return u ? Math.max(0, ...u.windows.map((w) => w.percent)) : 0;
+    return u ? Math.max(0, ...u.windows.filter((w) => !w.other).map((w) => settle(w).percent)) : 0;
   }
 
   /** When the account's exhausted (≥90%) limit window resets, if the provider told us. */
   resetAt(id: string): number | undefined {
-    const resets = (this.usage.get(id)?.windows ?? []).filter((w) => w.percent >= 90 && w.resetsAt).map((w) => w.resetsAt!);
+    // (A window whose reset time has passed counts as reset, even before the next check.)
+    const resets = (this.usage.get(id)?.windows ?? []).map((w) => settle(w)).filter((w) => !w.other && w.percent >= 90 && w.resetsAt).map((w) => w.resetsAt!);
     return resets.length ? Math.max(...resets) : undefined;
   }
 
-  async refreshAll(): Promise<void> {
-    await Promise.all(this.config.accounts.map((a) => this.refresh(a.id)));
+  /** `force`: the user asked (refresh button), so skip the request throttle and the 429 back-off. */
+  async refreshAll(force = false): Promise<void> {
+    await Promise.all(this.config.accounts.map((a) => this.refresh(a.id, force)));
   }
 
   /** Debounced refresh after an agent run finishes on this account. */
@@ -54,19 +58,22 @@ export class UsageService {
     this.timers.set(id, setTimeout(() => void this.refresh(id), 3000));
   }
 
-  async refresh(id: string): Promise<void> {
+  async refresh(id: string, force = false): Promise<void> {
     const acc = this.config.account(id);
     if (!acc) return;
-    if (acc.kind === 'claude') {
+    if (acc.kind === 'claude' && !force) {
       // Claude's numbers come from Anthropic's usage endpoint, which answers 429 when asked too often
       // (a refresh after every run adds up fast with helpers): ask at most every few minutes, and back off on 429.
       const now = Date.now();
       if (now < (this.backoffUntil.get(id) ?? 0) || now - (this.fetchedAt.get(id) ?? 0) < CLAUDE_MIN_INTERVAL_MS) return;
       this.fetchedAt.set(id, now);
     }
+    // The refresh button: an expired Claude login only renews when Claude Code makes a request, so make the
+    // smallest one (one Haiku "OK", no tools, nothing saved) and let Claude Code renew and save its own token.
+    if (acc.kind === 'claude' && force && claudeTokenExpired(acc)) await renewClaudeLogin(acc);
     let u: Omit<AccountUsage, 'runsToday'>;
     try {
-      u = acc.kind === 'codex' ? codexUsage(acc) : acc.kind === 'claude' ? await claudeUsage(acc) : { windows: [], note: 'Antigravity does not report its quota' };
+      u = acc.kind === 'codex' ? codexUsage(acc) : acc.kind === 'claude' ? await claudeUsage(acc) : await agyUsage(acc);
     } catch (err) {
       u = { windows: [], note: `Usage unavailable: ${(err as Error).message}` };
     }
@@ -161,14 +168,98 @@ function findKey(obj: unknown, key: string): unknown {
   return undefined;
 }
 
+let agyPath: string | null | undefined;
+
+/** Antigravity's quota from its `/usage` command (answered locally by the CLI: no model call, no tokens). */
+export async function agyUsage(acc: Account): Promise<Omit<AccountUsage, 'runsToday'>> {
+  agyPath ??= resolveCli('antigravity').path;
+  if (!agyPath) return { windows: [], note: 'Antigravity is not installed' };
+  const out = await new Promise<string>((resolve, reject) =>
+    execFile(agyPath!, ['-p', '/usage', '--output-format', 'stream-json'], { cwd: os.tmpdir(), env: accountEnv(acc), timeout: 60000, windowsHide: true }, (err, stdout) =>
+      err && !stdout ? reject(err) : resolve(String(stdout)),
+    ),
+  );
+  const data = out
+    .split(/\r?\n/)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return undefined;
+      }
+    })
+    .find((e) => e?.event === 'command_result' && e.command?.name === 'usage')?.command?.data;
+  if (!data?.groups) return { windows: [], note: 'Antigravity did not report its quota' };
+  return { windows: agyWindows(data.groups, acc.model), measuredAt: Date.now() };
+}
+
+/**
+ * Antigravity's limits as usage windows ("5h · Gemini", "week · Claude and GPT"). Groups for models this account isn't
+ * using are marked `other`: a group applies when one of the models it lists (or its own name) is in the model id.
+ */
+export function agyWindows(groups: any[], model?: string): UsageWindow[] {
+  const words = (s: string) => s.toLowerCase().split(/[^a-z0-9.]+/).filter(Boolean);
+  const mine = new Set(words(model ?? ''));
+  const uses = (g: any) => {
+    if (!mine.size) return true; // CLI default model: count every limit
+    const listed = /:\s*(.+)$/.exec(String(g.description ?? ''))?.[1].split(',') ?? [];
+    return [...listed, String(g.name ?? '')].some((m) => {
+      const w = words(m);
+      return w.length > 0 && w.every((x) => mine.has(x));
+    });
+  };
+  return groups.flatMap((g) => {
+    const group = String(g.name ?? '').replace(/\s+models$/i, '');
+    const other = !uses(g);
+    return (g.buckets ?? [])
+      .filter((b: any) => typeof b.remaining_fraction === 'number')
+      .map((b: any) =>
+        settle({
+          label: `${b.window === 'weekly' ? 'week' : b.window ?? 'limit'} · ${group}`,
+          percent: Math.round((1 - b.remaining_fraction) * 1000) / 10,
+          resetsAt: b.reset_time ? Date.parse(b.reset_time) : undefined,
+          ...(other ? { other } : {}),
+        }),
+      );
+  });
+}
+
+function claudeCredentials(acc: Account): any {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(acc.home ?? path.join(HOME, '.claude'), '.credentials.json'), 'utf8'))?.claudeAiOauth;
+  } catch {
+    return undefined;
+  }
+}
+
+function claudeTokenExpired(acc: Account): boolean {
+  const oauth = claudeCredentials(acc);
+  return !!oauth?.accessToken && !!oauth.expiresAt && oauth.expiresAt < Date.now();
+}
+
+function renewClaudeLogin(acc: Account): Promise<void> {
+  const cli = resolveCli('claude').path;
+  if (!cli) return Promise.resolve();
+  log('usage', `${acc.label}: login token expired, asking Claude Code to renew it`);
+  const args = ['-p', 'Reply with OK.', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config', '--tools', ''];
+  return new Promise((resolve) => {
+    // claude.exe takes the empty `--tools` argument directly; an npm .cmd shim needs a shell (and quoting).
+    const direct = /\.exe$/i.test(cli);
+    const file = direct ? cli : `${commandLine(cli, args.slice(0, -1))} ""`;
+    execFile(file, direct ? args : [], { shell: !direct, cwd: os.tmpdir(), env: accountEnv(acc), timeout: 60000, windowsHide: true }, (err) => {
+      const why = err ? ` (${err.message.split('\n')[0]})` : '';
+      log('usage', `${acc.label}: ${claudeTokenExpired(acc) ? `login still expired${why}` : 'login renewed'}`);
+      resolve();
+    });
+  });
+}
+
 export async function claudeUsage(acc: Account): Promise<Omit<AccountUsage, 'runsToday'>> {
-  const credFile = path.join(acc.home ?? path.join(HOME, '.claude'), '.credentials.json');
-  if (!fs.existsSync(credFile)) return { windows: [], note: 'Not signed in' };
-  const oauth = JSON.parse(fs.readFileSync(credFile, 'utf8'))?.claudeAiOauth;
+  const oauth = claudeCredentials(acc);
   if (!oauth?.accessToken) return { windows: [], note: 'Not signed in' };
   const plan = oauth.subscriptionType as string | undefined;
   if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
-    return { windows: [], plan, note: 'Login token expired — it refreshes the next time Claude runs' };
+    return { windows: [], plan, note: 'Login token expired — press ↻ to renew it' };
   }
   const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
     headers: { Authorization: `Bearer ${oauth.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' },

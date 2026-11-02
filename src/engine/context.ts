@@ -68,9 +68,18 @@ export function contextBrief(t: Thread, labelOf: (id?: string) => string, why: s
     .slice(-14)
     .map((m) => `${m.role === 'user' ? 'USER' : labelOf(m.accountId).toUpperCase()}: ${m.text.length > 1800 ? m.text.slice(0, 1800) + ' …' : m.text}`)
     .join('\n\n');
+  // The request in progress (a take-over mid-task): what was said and done so far, step by step. Or, after a turn
+  // that was cut off (VS Code closed, stopped), the steps it got through: "continue" means carry on from there.
+  // (The latest such turn since the last answer; notes like "c leads this thread now" may come after it.)
+  const since = t.messages.slice(t.messages.map((m) => m.role).lastIndexOf('agent') + 1);
+  const cut = since.filter((m) => m.role === 'system' && m.activity?.length).at(-1);
+  const items = t.work?.items.length ? t.work.items : (cut?.activity ?? []);
+  const steps = items.filter((s) => !s.startsWith('💭')).slice(-60);
+  const plain = (s: string) => s.replace(/^▶\s*/u, 'Ran ').replace(/^(💬|🏁|🔧|✏️|🔎)\s*/u, '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const doneSoFar = steps.map((s) => `- ${plain(s)}`).join('\n');
   let lastWork = '';
   try {
-    if (t.lastLog) {
+    if (t.lastLog && !doneSoFar) {
       const log = fs.readFileSync(t.lastLog, 'utf8');
       lastWork = log.length > 6000 ? '…' + log.slice(-6000) : log;
     }
@@ -90,6 +99,8 @@ export function contextBrief(t: Thread, labelOf: (id?: string) => string, why: s
     `## Context hand-over (${why})`,
     'You are continuing work another agent started in this folder. Everything it knew is summarised below. Continue seamlessly: do not start over, do not redo finished work.',
     convo && `### Conversation so far\n${convo}`,
+    doneSoFar &&
+      `### The current request: what was done so far (oldest first)\nThe previous agent stopped in the middle of this request. Its last step may not have finished, so check the files it was working on before relying on them; then carry on from there.\n${doneSoFar}`,
     lastWork && `### What the previous agent was doing most recently (its own output)\n${lastWork}`,
     (status || stat) && `### Current uncommitted changes in the folder\n${status}\n${stat}`,
   ]

@@ -17,3 +17,12 @@ describe('activity for the panel (Codex-style)', () => {
     expect(p.items).toEqual(['💬 I checked the catalog: 37 papers so far.', '💬 Next I will review SecAlign.']);
   });
 });
+
+describe('final answer vs commentary (Codex phase)', () => {
+  it('marks what Codex calls its final answer with 🏁, commentary with 💬', () => {
+    const p = new ActivityParser(8000, 300, true);
+    p.feed('\ncodex\nLet me check the files.\n\n→ run command ls\n\ncodex final\nAll **done**.\nTwo lines.\n');
+    p.flush();
+    expect(p.items).toEqual(['💬 Let me check the files.\n', '🔧 run command ls', '🏁 All **done**.\nTwo lines.']);
+  });
+});

@@ -7,6 +7,9 @@ export interface ThreadMsg {
   accountId?: string;
   /** Files the user attached (absolute paths, copied into the workspace's .super-agent/attachments). */
   attachments?: string[];
+  /** On the message that ended a turn: everything the agents did and said on the way (Codex-style "Worked for"). */
+  activity?: string[];
+  workedMs?: number;
 }
 
 /** The CLI conversation a thread lives in, so the next turn (or the next agent) keeps its full context. */
@@ -38,6 +41,16 @@ export interface Thread {
   messages: ThreadMsg[];
   /** Thread this one was delegated from or helps. */
   parentId?: string;
+  /** The turn in progress: when it started and what was done/said so far (across restarts and report turns). */
+  work?: { startedAt: number; items: string[] };
+  /** The run was stopped to take a new user message: it resumes at once instead of reporting "Stopped". */
+  restarting?: boolean;
+  /** The lead's turn ended while helpers still work: the final answer waits for them (status is 'waiting'). */
+  awaitingHelpers?: boolean;
+  /** Reports from finished helpers, folded into the next turn. */
+  reports?: { by: string; title: string; text: string; file?: string }[];
+  /** Set after a run ended with no answer and was handed to another agent; cleared by the next answer. */
+  retried?: boolean;
   /** For helper threads: the hand-off request file the lead wrote. */
   helperFile?: string;
   runId?: string;

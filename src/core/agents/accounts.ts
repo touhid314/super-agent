@@ -91,7 +91,7 @@ export class AccountService {
     return added;
   }
 
-  update(id: string, patch: Partial<Pick<Account, 'label' | 'role' | 'model'>>): void {
+  update(id: string, patch: Partial<Pick<Account, 'label' | 'role' | 'model' | 'effort'>>): void {
     const acc = this.config.account(id);
     if (!acc) return;
     if (patch.role === 'master') {

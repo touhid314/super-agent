@@ -70,10 +70,11 @@ export function accountEnv(account: Account, base: NodeJS.ProcessEnv = process.e
   return env;
 }
 
-const CLAUDE_SAFE_BASH = [
-  'npm', 'npx', 'pnpm', 'yarn', 'node', 'python', 'py', 'pip', 'pytest', 'uv',
-  'dotnet', 'cargo', 'go', 'java', 'javac', 'mvn', 'gradle', 'tsc', 'ls', 'dir', 'cat', 'mkdir', 'echo',
-].map((c) => `Bash(${c}:*)`);
+/**
+ * Standard mode for Claude Code: any shell command and edits in the workspace, plus the Temp folder for scratch files.
+ * (A short command allowlist kept refusing everyday things like `cd … &&`, sed or grep; headless runs can't ask.)
+ */
+const CLAUDE_STANDARD = ['--add-dir', os.tmpdir(), '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash'];
 
 export interface ArgsInput {
   kind: AgentKind;
@@ -81,6 +82,8 @@ export interface ArgsInput {
   autonomy: Autonomy;
   cwd: string;
   model?: string;
+  /** Reasoning effort; unset: the CLI's default. */
+  effort?: string;
   /** Codex writes its final message here. */
   lastMessageFile: string;
   /** Continue this CLI session (Codex session id / Claude session id / Antigravity conversation id). */
@@ -125,7 +128,7 @@ export function ensureAgyBrowser(agyPath: string): void {
   }
 }
 
-function codexBrowser(outputDir: string): string[] {
+export function codexBrowser(outputDir: string): string[] {
   const s = browserServer(outputDir);
   // TOML literal strings ('...') need no escaping, which keeps the cmd.exe quoting simple.
   return [
@@ -144,7 +147,8 @@ function codexBrowser(outputDir: string): string[] {
 
 /** CLI arguments for a headless run. The prompt itself is always sent on stdin. */
 export function buildArgs(i: ArgsInput): string[] {
-  const model = i.model ? (i.kind === 'claude' || i.kind === 'antigravity' ? ['--model', i.model] : ['-m', i.model]) : [];
+  const effort = i.effort ? (i.kind === 'codex' ? ['-c', `model_reasoning_effort='${i.effort}'`] : ['--effort', i.effort]) : [];
+  const model = [...(i.model ? (i.kind === 'claude' || i.kind === 'antigravity' ? ['--model', i.model] : ['-m', i.model]) : []), ...effort];
   if (i.kind === 'codex') {
     const browser = i.browser ? codexBrowser(i.browser.outputDir) : [];
     const sandbox =
@@ -167,17 +171,22 @@ export function buildArgs(i: ArgsInput): string[] {
         ? ['--permission-mode', 'dontAsk', '--allowedTools', 'Read', 'Glob', 'Grep', ...browserTools]
         : i.autonomy === 'full'
           ? ['--dangerously-skip-permissions']
-          : ['--permission-mode', 'acceptEdits', '--allowedTools', ...CLAUDE_SAFE_BASH, ...browserTools];
+          : [...CLAUDE_STANDARD, ...browserTools];
     // Variadic options (--mcp-config, --allowedTools) end at the next flag, so --allowedTools comes last.
     const session = i.resume ? ['--resume', i.resume] : i.newSessionId ? ['--session-id', i.newSessionId] : [];
     const browser = i.browser ? ['--mcp-config', i.browser.configFile] : [];
     return [...browser, '-p', '--output-format', 'stream-json', '--verbose', ...session, ...model, ...perms];
   }
   // Antigravity: the runner appends "-p <prompt>" (agy ignores stdin).
-  const perms = i.mode === 'read-only' ? ['--mode', 'plan'] : i.autonomy === 'full' ? ['--dangerously-skip-permissions'] : ['--mode', 'accept-edits'];
-  // Headless agy auto-denies MCP calls, so the browser (registered by ensureAgyBrowser) is allowed per run.
-  const browser = i.browser ? ['--settings', JSON.stringify({ permissions: { allow: ['mcp(playwright/*)'] } })] : [];
-  return ['--output-format', 'stream-json', ...(i.resume ? ['--conversation', i.resume] : []), ...perms, ...browser, ...model];
+  // Headless agy can't ask for permission, so anything not allowed up front is silently denied and the run ends
+  // with no answer. Standard mode matches Codex's workspace-write: commands run, but inside agy's sandbox.
+  // (Prefix rules like command(npm test) don't match headless commands; only command(*) does.)
+  const standard = i.mode !== 'read-only' && i.autonomy !== 'full';
+  const perms = i.mode === 'read-only' ? ['--mode', 'plan'] : i.autonomy === 'full' ? ['--dangerously-skip-permissions'] : ['--mode', 'accept-edits', '--sandbox'];
+  // The browser (registered by ensureAgyBrowser) is allowed per run, like commands.
+  const allow = [...(standard ? ['command(*)'] : []), ...(i.browser ? ['mcp(playwright/*)'] : [])];
+  const settings = allow.length ? ['--settings', JSON.stringify({ permissions: { allow } })] : [];
+  return ['--output-format', 'stream-json', ...(i.resume ? ['--conversation', i.resume] : []), ...perms, ...settings, ...model];
 }
 
 /** Arguments that start the CLI's interactive sign-in flow. */

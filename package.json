@@ -6,6 +6,10 @@
   "publisher": "super-agent-dev",
   "private": true,
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/touhid314/super-agent"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },

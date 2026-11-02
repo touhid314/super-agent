@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { AccountService } from './core/agents/accounts';
 import { ensureAgyBrowser } from './core/agents/cli';
 import { AccountPool } from './core/agents/pool';
+import { HotAgents } from './core/agents/hot';
 import { cancelRun, cancelAll, runAgent } from './core/agents/runner';
 import { UsageService } from './core/agents/usage';
 import { ConfigStore } from './core/store/config';
@@ -11,6 +12,7 @@ import { paths } from './core/store/paths';
 import { AGENT_KINDS, type AgentKind } from './core/types';
 import { Engine } from './engine/engine';
 import { FileStore, TelegramRelay, uniqueIn } from './telegram';
+import { configureLog, log as trace } from './core/log';
 import { listModels, modelInfo, type ModelOption } from './engine/models';
 import type { Thread } from './engine/types';
 
@@ -43,6 +45,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const modelOptions: Record<string, ModelOption[]> = {};
   const log = vscode.window.createOutputChannel('Super Agent');
   context.subscriptions.push(log);
+  // Everything Super Agent decides goes to ~/.super-agent/logs/ (and this output channel), to trace issues.
+  trace('ext', 'activated', { log: configureLog(paths.data, (line) => log.appendLine(line)) });
   const post = (msg: unknown) => void view?.webview.postMessage(msg);
   const usage = new UsageService(config, { all: () => [] } as never, () => pushState());
 
@@ -52,20 +56,42 @@ export function activate(context: vscode.ExtensionContext): void {
   status.show();
 
   const cwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const activityTimers = new Map<string, NodeJS.Timeout>();
+  // Agents stay running between messages (no 2–4 s CLI start per turn); each team member is kept warm.
+  const hot = new HotAgents(paths.data);
+  context.subscriptions.push({ dispose: () => hot.dispose() });
+  let warmedAt = 0;
+  const warmTeam = () => {
+    const folder = cwd();
+    if (!folder || config.settings.hotAgents === false || Date.now() - warmedAt < 10000) return;
+    warmedAt = Date.now();
+    const team = config.accounts.filter((a) => a.role !== 'off').flatMap((account) => {
+      const cliPath = accounts.cliPath(account.kind);
+      return cliPath ? [{ account, cliPath }] : [];
+    });
+    hot.warm(team, { cwd: folder, autonomy: config.settings.autonomy, browser: config.settings.browserTools !== false });
+  };
 
   engine = new Engine({
     config,
     pool,
     dataDir: paths.data,
     cliPath: (k: AgentKind) => accounts.cliPath(k),
-    runAgent: (req) => runAgent(req).finally(() => usage.soon(req.account.id)),
-    cancelRun,
+    runAgent: (req) => (config.settings.hotAgents === false ? runAgent(req) : hot.run(req)).finally(() => usage.soon(req.account.id)),
+    cancelRun: (id) => void (hot.cancel(id) || cancelRun(id)),
+    steer: (id, text, label) => hot.steer(id, text, label),
     usageLoad: (id) => usage.load(id),
     usageResetAt: (id) => usage.resetAt(id),
     autonomy: () => config.settings.autonomy,
     onChange: () => pushState(),
     onOutput: (threadId, text) => {
       post({ type: 'output', threadId, text });
+      // The turn's activity (what it did and said) for the panel, at most every 150 ms per thread.
+      if (!activityTimers.has(threadId))
+        activityTimers.set(threadId, setTimeout(() => {
+          activityTimers.delete(threadId);
+          post({ type: 'activity', threadId, items: engine?.liveActivity(threadId) ?? [], startedAt: engine?.get(threadId)?.work?.startedAt });
+        }, 150));
       telegram?.onOutput(threadId, text);
     },
     onFinished: (t, outcome) => onFinished(t, outcome),
@@ -221,6 +247,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   function pushState(): void {
+    warmTeam(); // cheap when everyone is already warm; picks up new accounts, models and settings
     const working = eng.working;
     status.text = working ? `$(sync~spin) Super Agent: ${working} working` : '$(organization) Super Agent';
     status.tooltip = config.accounts
@@ -309,11 +336,21 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!modelOptions[id]?.length) modelOptions[id] = await listModels(a, accounts.cliPath(a.kind)).catch(() => []);
     const current = modelInfo(a, modelOptions[id]);
     const items = [
+      { label: `$(dashboard) Reasoning effort: ${a.effort ?? 'CLI default'}`, description: 'change', id: '__effort' },
       { label: `${!a.model ? '$(check) ' : ''}CLI default`, description: current.isDefault ? current.name : '', id: '' },
       ...modelOptions[id].map((o) => ({ label: `${a.model === o.id ? '$(check) ' : ''}${o.name}`, description: o.id, detail: o.description, id: o.id })),
     ];
     const pick = await vscode.window.showQuickPick(items, { placeHolder: `Model for ${a.label}`, matchOnDescription: true });
     if (!pick) return;
+    if (pick.id === '__effort') {
+      const levels = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+      const e = await vscode.window.showQuickPick(
+        levels.map((l) => ({ label: `${(a.effort ?? '') === l ? '$(check) ' : ''}${l || 'CLI default'}`, id: l })),
+        { placeHolder: `Reasoning effort for ${a.label}` },
+      );
+      if (e) accounts.update(id, { effort: e.id || undefined });
+      return pushState();
+    }
     accounts.update(id, { model: pick.id });
     pushState();
   }
@@ -407,7 +444,7 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showWarningMessage('Open a folder first: Super Agent agents work in the open workspace folder.');
           return;
         }
-        post({ type: 'selected', threadId: eng.send(m.threadId, m.text, folder, Array.isArray(m.attachments) ? m.attachments : []).id });
+        post({ type: 'selected', threadId: eng.send(m.threadId, m.text, folder, Array.isArray(m.attachments) ? m.attachments : [], m.mode === 'queue' ? 'queue' : 'now').id });
         return;
       case 'attach':
         return void attachFiles();

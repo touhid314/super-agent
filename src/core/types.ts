@@ -14,6 +14,8 @@ export interface Account {
   home: string | null;
   role: AccountRole;
   model?: string;
+  /** Reasoning effort (low · medium · high · xhigh · max); unset: the CLI's default. */
+  effort?: string;
   createdAt: number;
 }
 
@@ -61,6 +63,8 @@ export interface Settings {
   soundOnDone: boolean;
   /** Give agents a browser (Playwright MCP): open pages, click, fill forms, take screenshots. */
   browserTools: boolean;
+  /** Keep agent CLIs running between messages (no startup lag); false: start a fresh process per turn. */
+  hotAgents?: boolean;
   maxFixAttempts: number;
   taskTimeoutMin: number;
   verifyTimeoutMin: number;

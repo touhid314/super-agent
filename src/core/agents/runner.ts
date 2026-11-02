@@ -37,11 +37,11 @@ export interface RunResult {
 }
 
 /** The account can't be used right now (logged out, expired, or no longer eligible for this CLI). */
-const AUTH_FAILED =
+export const AUTH_FAILED =
   /please (run )?\/?login|not logged in|log ?in required|authentication (failed|cancelled|required)|set an auth method|invalid api key|invalid_grant|token (has )?expired|unauthorized|\b401\b|IneligibleTier|no longer supported|not eligible|account (is )?(disabled|suspended)/i;
-const RATE_LIMIT = /rate.?limit|usage limit|quota (exceeded|exhausted)|too many requests|\b429\b|hit your (usage )?limit|resource.?exhausted/i;
+export const RATE_LIMIT = /rate.?limit|usage limit|quota (exceeded|exhausted)|too many requests|\b429\b|hit your (usage )?limit|resource.?exhausted/i;
 // eslint-disable-next-line no-control-regex
-const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
+export const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
 
 const active = new Map<string, { child: ChildProcess; cancelled: boolean }>();
 
@@ -56,7 +56,7 @@ export function cancelAll(): void {
   for (const id of active.keys()) cancelRun(id);
 }
 
-function killTree(pid: number): void {
+export function killTree(pid: number): void {
   execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined);
 }
 
@@ -75,6 +75,7 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
     autonomy: req.autonomy,
     cwd: req.cwd,
     model: req.account.model,
+    effort: req.account.effort,
     lastMessageFile,
     resume: req.resume,
     newSessionId: req.account.kind === 'claude' && !req.resume ? newSessionId : undefined,
@@ -195,15 +196,18 @@ export function renderAgyEvent(line: string): { text: string; final?: string } {
     if (s.text_delta) return { text: String(s.text_delta) };
     if (s.state === 'ACTIVE' && s.step_type && !['user_input', 'agent_response'].includes(s.step_type)) {
       const what = s.tool_name ?? s.step_type;
-      const detail = s.command ?? s.path ?? s.file_path ?? s.title ?? '';
-      return { text: `\n→ ${String(what).replace(/_/g, ' ')} ${String(detail).slice(0, 160)}\n` };
+      return { text: `\n→ ${String(what).replace(/_/g, ' ')} ${agyDetail(s)}\n` };
     }
+    if (s.state === 'ERROR' && s.tool_info?.error?.message) return { text: `  ✗ ${String(s.tool_info.error.message).split('\n')[0].slice(0, 300)}\n` };
     return { text: '' };
   }
   if (ev.event === 'result') {
     const r = ev.result ?? {};
     const ok = r.status === 'SUCCESS';
-    return { text: ok ? '' : `\n[antigravity] ${r.status ?? 'error'}: ${r.error ?? r.response ?? ''}\n`, final: ok ? String(r.response ?? '') : '' };
+    // Headless agy can't ask for permission: a denied action often ends the run with an empty answer.
+    const denied = (r.denied_actions ?? []).map((d: any) => d.display_name ?? d.action).filter(Boolean);
+    const note = denied.length ? `\n[antigravity] permission denied: ${denied.join(', ')}\n` : '';
+    return { text: (ok ? '' : `\n[antigravity] ${r.status ?? 'error'}: ${r.error ?? r.response ?? ''}\n`) + note, final: ok ? String(r.response ?? '') : '' };
   }
   if (ev.event === 'error') return { text: `\n[antigravity] error: ${JSON.stringify(ev.error ?? ev).slice(0, 400)}\n` };
   return { text: '' };
@@ -237,6 +241,13 @@ export function renderClaudeEvent(line: string): { text: string; final?: string 
     return { text: meta, final: ev.is_error ? '' : final };
   }
   return { text: '' };
+}
+
+/** The file, command or query an Antigravity step acts on (its parameters use PascalCase names). */
+function agyDetail(s: any): string {
+  const p = s.tool_info?.parameters ?? {};
+  const v = p.CommandLine ?? p.AbsolutePath ?? p.TargetFile ?? p.FilePath ?? p.DirectoryPath ?? p.SearchPath ?? p.Query ?? p.Url ?? s.command ?? s.path ?? s.file_path ?? s.title ?? '';
+  return String(v).replace(/\s+/g, ' ').slice(0, 160);
 }
 
 function describeTool(input: any): string {

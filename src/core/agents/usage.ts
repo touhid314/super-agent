@@ -3,8 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Account, AccountUsage, JobState, UsageWindow } from '../types';
 import type { ConfigStore } from '../store/config';
+import { log } from '../log';
 
 const HOME = os.homedir();
+const CLAUDE_MIN_INTERVAL_MS = 2 * 60000;
+const CLAUDE_BACKOFF_MS = 10 * 60000;
 
 /**
  * Usage limits per account.
@@ -15,6 +18,9 @@ const HOME = os.homedir();
 export class UsageService {
   private usage = new Map<string, AccountUsage>();
   private timers = new Map<string, NodeJS.Timeout>();
+  /** Claude usage requests: when each account was last asked, and until when to back off after a 429. */
+  private fetchedAt = new Map<string, number>();
+  private backoffUntil = new Map<string, number>();
 
   constructor(
     private config: ConfigStore,
@@ -51,11 +57,27 @@ export class UsageService {
   async refresh(id: string): Promise<void> {
     const acc = this.config.account(id);
     if (!acc) return;
+    if (acc.kind === 'claude') {
+      // Claude's numbers come from Anthropic's usage endpoint, which answers 429 when asked too often
+      // (a refresh after every run adds up fast with helpers): ask at most every few minutes, and back off on 429.
+      const now = Date.now();
+      if (now < (this.backoffUntil.get(id) ?? 0) || now - (this.fetchedAt.get(id) ?? 0) < CLAUDE_MIN_INTERVAL_MS) return;
+      this.fetchedAt.set(id, now);
+    }
     let u: Omit<AccountUsage, 'runsToday'>;
     try {
       u = acc.kind === 'codex' ? codexUsage(acc) : acc.kind === 'claude' ? await claudeUsage(acc) : { windows: [], note: 'Antigravity does not report its quota' };
     } catch (err) {
       u = { windows: [], note: `Usage unavailable: ${(err as Error).message}` };
+    }
+    if (u.note) log('usage', `${acc.label}: ${u.note}`);
+    if (u.note?.includes('HTTP 429')) this.backoffUntil.set(id, Date.now() + CLAUDE_BACKOFF_MS);
+    const prev = this.usage.get(id);
+    if (!u.windows.length && u.note?.startsWith('Usage unavailable') && prev?.windows.length) {
+      // One failed check shouldn't blank the panel: keep the last numbers we had.
+      this.usage.set(id, { ...prev, windows: prev.windows.map((w) => settle(w)), runsToday: this.runsToday(id) });
+      this.onChange();
+      return;
     }
     this.usage.set(id, { ...u, runsToday: this.runsToday(id) });
     this.onChange();

@@ -97,24 +97,30 @@ export function contextBrief(t: Thread, labelOf: (id?: string) => string, why: s
     .join('\n\n');
 }
 
-/** Standing instructions every lead gets: work yourself, and spin off parallel helpers when useful. */
+/** Live team status, kept in the workspace so every agent can read it at any time. */
+export const TEAM_FILE = '.super-agent/team.md';
+
+/**
+ * What every agent (lead or helper) is told once per session. These are strong agents: they get the facts and the
+ * mechanism, not a playbook.
+ */
 export function leadPreamble(handoffDir: string): string {
-  return `You are working inside Super Agent, which gives you a team of other coding agents (Codex, Claude Code, Antigravity) who are free to help.
-Do the work yourself. While working, if you notice a piece of work that is INDEPENDENT of what you are doing right now and would save time if someone did it in parallel (e.g. tests for a finished module, a separate page, docs, a script), hand it off:
-- Create a Markdown file in \`${handoffDir}\` (e.g. \`${handoffDir}/write-api-tests.md\`) containing: a one-line title, the goal, the exact files the helper owns, and any context it needs.
-- A free teammate starts on it immediately in this same folder. Do not edit the files you gave away.
-- When it finishes, its report appears next to your request as \`<name>.result.md\`.
-Only hand off clearly separable work; small or tightly coupled tasks are faster to do yourself.
+  return `<super-agent-internal>
+You lead a team in Super Agent: other strong coding agents (Codex, Claude Code, Antigravity) work in this same folder, and you finish fastest by keeping all of them busy.
+- To give a teammate a task, write a Markdown file in \`${handoffDir}/\` (first line: a title; then what to do and which files it owns). A free teammate starts on it at once. Don't edit files you handed off.
+- Whenever a teammate is free and there is work that can run alongside yours (another item of a batch, a side check, tests, research), hand it over right away rather than doing it yourself. One task per free teammate; do yourself only what can't be split.
+- You are told the moment a teammate finishes (with its report) and who is free then. Leading comes first: check the result, give the free teammate its next task, then continue your own work.
+- \`${TEAM_FILE}\` shows live who is free or busy and every task's status.
+Keep this plumbing out of your replies unless the user asks about it.
+</super-agent-internal>
 
 `;
 }
 
+/** A hand-off, as the helper that picks it up sees it. */
 export function helperPrompt(leadLabel: string, leadGoal: string, request: string, owns: string): string {
-  return `You are a helping hand in Super Agent. ${leadLabel} is working on: "${leadGoal}" and asked you to take this part in parallel, in the same folder.
-Other agents are editing other files here right now: change only the files listed in the request${owns ? ` (${owns})` : ''}.
-
-## Your task
+  return `## Your task: a hand-off from ${leadLabel}${leadGoal ? ` (working on "${leadGoal}")` : ''}
 ${request}
 
-When done, reply with a short report: what you did, files changed, anything the lead must know.`;
+Others are working in this folder at the same time: change only the files this task owns${owns ? ` (${owns})` : ''}. When done, reply with a short report: what you did, files changed, anything ${leadLabel} must know.`;
 }

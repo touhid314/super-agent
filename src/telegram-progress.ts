@@ -3,65 +3,12 @@
  * and what it's doing right now, updated every few seconds; it turns into "Done in …" when the agent finishes.
  */
 
-const MAX_ITEMS = 6;
-const MAX_LEN = 110;
 const EVERY_MS = 4000;
 const FRAMES = ['◐', '◓', '◑', '◒'];
 
-/** Turns raw CLI output (Codex, Claude Code, Antigravity) into short activity lines, skipping prompts and command output. */
-export class ActivityParser {
-  items: string[] = [];
-  private buf = '';
-  /** say: narration · skip: the echoed prompt / command output · cmd: the next line is a command. */
-  private mode: 'say' | 'skip' | 'cmd' = 'say';
+import { ActivityParser } from './engine/activity';
 
-  feed(text: string): void {
-    this.buf += text;
-    const lines = this.buf.split(/\r?\n/);
-    this.buf = lines.pop() ?? '';
-    for (const raw of lines) this.line(raw);
-  }
-
-  private line(raw: string): void {
-    const line = raw.trim();
-    if (!line) return;
-    // Codex block headers.
-    if (line === 'user' || line === 'tokens used') return void (this.mode = 'skip');
-    if (line === 'codex') return void (this.mode = 'say');
-    if (line === 'exec') return void (this.mode = 'cmd');
-    if (line === 'thinking') return this.push('💭 thinking…'), void (this.mode = 'skip');
-    if (/^(apply_patch|file update)/.test(line)) return this.push('✏️ editing files'), void (this.mode = 'skip');
-    const mcp = /^mcp: ([^ ]+) started/.exec(line);
-    if (mcp) return this.push(`🔧 ${mcp[1]}`);
-    if (/^mcp: /.test(line)) return;
-    const web = /^web search:\s*(.*)$/.exec(line);
-    if (web) return web[1] ? this.push(`🔎 ${web[1]}`) : undefined;
-    // Claude Code / Antigravity tool actions ("→ Read file.ts").
-    if (line.startsWith('→')) return this.push(`🔧 ${line.replace(/^→\s*/, '')}`), void (this.mode = 'say');
-    // Banners and our own markers.
-    if (/^(\$ |\[super-agent\]|OpenAI Codex|-{4,}|workdir:|model:|provider:|approval:|sandbox:|reasoning |session id:)/.test(line)) return;
-    if (this.mode === 'cmd') {
-      this.push(`▶ ${command(line)}`);
-      this.mode = 'skip';
-      return;
-    }
-    if (this.mode === 'say' && !/^\d[\d,]*$/.test(line)) this.push(`💬 ${line.replace(/[*_`#>]/g, '')}`);
-  }
-
-  private push(item: string): void {
-    const short = item.length > MAX_LEN ? `${item.slice(0, MAX_LEN - 1)}…` : item;
-    if (this.items.at(-1) === short) return;
-    this.items.push(short);
-    if (this.items.length > MAX_ITEMS) this.items.shift();
-  }
-}
-
-/** Shows the command itself, not the PowerShell wrapper Codex runs it in. */
-function command(line: string): string {
-  const m = /powershell(?:\.exe)?"?\s+-Command\s+(.*)$/i.exec(line);
-  const cmd = m ? m[1] : line;
-  return cmd.replace(/^"(.*)"$/, '$1').replace(/\\\\/g, '\\');
-}
+export { ActivityParser };
 
 export interface ProgressDeps {
   api<T = unknown>(method: string, body: Record<string, unknown>): Promise<T>;

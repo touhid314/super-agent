@@ -88,7 +88,35 @@ i.week { background: #58a6ff; }
 .activity { margin: 6px 0 0 8px; padding-left: 12px; border-left: 1px solid var(--line); font-size: 11.5px; }
 .activity pre { margin: 0 0 4px; font-family: var(--vscode-editor-font-family); white-space: pre-wrap; max-height: 180px; overflow: auto; color: var(--vscode-descriptionForeground); }
 
-.helpers { display: flex; flex-wrap: wrap; gap: 4px; }
+/* back bar on helper threads: ← root › … › this thread */
+.crumbs { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 4px; min-width: 0; padding: 6px 0; margin-bottom: 4px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--line); font-size: 12px; }
+.crumbs .back { flex: none; border: 1px solid var(--line); background: var(--soft); border-radius: 6px; width: 24px; height: 22px; cursor: pointer; }
+.crumbs .back:hover { border-color: var(--vscode-focusBorder); }
+.crumb { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex-shrink: 1; }
+.crumb a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.crumb a:hover { text-decoration: underline; }
+.crumb .sep { color: var(--vscode-descriptionForeground); }
+.crumb.here { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+
+/* work graph: each agent, its recent steps, and the helpers it brought in (nested) */
+.graph { font-size: 12px; }
+.g-head { display: flex; align-items: center; gap: 6px; min-width: 0; height: 22px; }
+.g-head.link { cursor: pointer; }
+.g-head.link:hover b { text-decoration: underline; }
+.g-head .logo { width: 16px; height: 16px; }
+.g-none { width: 16px; height: 16px; border-radius: 50%; border: 1px dashed var(--line); flex: none; }
+.g-arrow { color: var(--vscode-descriptionForeground); margin-left: -2px; }
+.g-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.g-state { flex: none; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.g-state.wait { color: #d29922; }
+.g-state.done { color: #3fb950; }
+.g-steps { margin: 2px 0 4px 7px; padding-left: 14px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+.g-step { color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.5; }
+.g-step b { font-weight: 600; color: var(--vscode-foreground); opacity: 0.8; }
+.g-step.now { color: var(--vscode-foreground); }
+.g-step code { font-family: var(--vscode-editor-font-family); font-size: 11px; background: var(--soft); padding: 0 4px; border-radius: 4px; }
+.g-step.say { white-space: pre-wrap; overflow: visible; }
+.g-kids { margin-left: 7px; padding-left: 10px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .tchip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; height: 24px; padding: 0 10px 0 4px; border-radius: 999px; border: 0; background: var(--soft); cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tchip .logo { width: 16px; height: 16px; }
 .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #3fb950; }
@@ -163,3 +191,27 @@ i.week { background: #58a6ff; }
 .u-reset { grid-column: 2 / -1; font-size: 0.9em; }
 .u-reset:empty { display: none; }
 .u-bar { height: 4px; border-radius: 3px; background: rgba(128, 128, 128, 0.25); overflow: hidden; }
+.queue-btn { height: 28px; padding: 0 10px; margin-right: 6px; border-radius: 14px; border: 1px solid var(--line); background: var(--soft); cursor: pointer; font-size: 12px; }
+.queue-btn:hover:not(:disabled) { border-color: var(--vscode-focusBorder); }
+.queue-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Codex-style work in progress: "Working for …", then what the agent says (in full) and its steps; collapsed after */
+.work { margin: 4px 0 6px; font-size: 12.5px; }
+.work-head { font-size: 12px; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
+/* Steps clip their overflow, so as flex items they would shrink to nothing in a height-limited box: keep their height. */
+.timeline > * { flex-shrink: 0; }
+.timeline { display: flex; flex-direction: column; gap: 3px; padding: 2px 6px 2px 10px; border-left: 1px solid var(--line); max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
+.tl-say { color: var(--vscode-foreground); line-height: 1.55; margin: 2px 0; }
+.tl-say p { margin: 0 0 6px; }
+.tl-say p:last-child { margin-bottom: 0; }
+.worked { margin: 2px 0 4px; }
+.worked-head { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 2px 0; cursor: pointer; font-size: 12px; color: var(--vscode-descriptionForeground); }
+.worked-head:hover:not(:disabled) { color: var(--vscode-foreground); }
+.worked-head:disabled { cursor: default; }
+.worked .timeline { margin: 4px 0 8px; }
+
+/* Codex-style: the time shows as text under a message while it is hovered (space kept, so nothing jumps) */
+.stamp { font-size: 11px; line-height: 16px; color: var(--vscode-descriptionForeground); opacity: 0; transition: opacity 0.12s; user-select: none; }
+.mine .stamp { align-self: flex-end; margin-top: -2px; }
+.msg.agent .stamp { margin-top: 2px; }
+.mine:hover .stamp, .msg.agent:hover .stamp { opacity: 1; }

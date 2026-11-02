@@ -24,3 +24,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode-test/
+
+# Speed-test build output
+evaluation/.out/

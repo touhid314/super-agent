@@ -11,3 +11,4 @@ trash/**
 code
 .gitignore
 docs/**
+evaluation/**

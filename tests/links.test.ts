@@ -28,3 +28,15 @@ describe('fileTarget', () => {
     expect(fileTarget('src/x.ts')).toBeUndefined();
   });
 });
+
+describe('projectDir', () => {
+  it('one folder per project in the data folder, named after it, the same however the path is written', async () => {
+    const { projectDir } = await import('../src/core/store/paths');
+    const data = path.resolve('data-root');
+    const a = projectDir(path.resolve('Work', 'My App'), data);
+    expect(path.dirname(a)).toBe(path.join(data, 'work'));
+    expect(path.basename(a)).toMatch(/^My_App-[0-9a-f]{8}$/);
+    if (process.platform === 'win32') expect(projectDir(`${path.resolve('work', 'my app').toLowerCase()}\\`, data).toLowerCase()).toBe(a.toLowerCase());
+    expect(projectDir(path.resolve('Work', 'Other'), data)).not.toBe(a);
+  });
+});

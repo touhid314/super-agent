@@ -23,13 +23,16 @@ process.stdin.on('data', (d) => {
     }
     out({ type: 'user', message: msg, isReplay: true });
     out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Monitor', input: { command: 'tail -f run.log' } }] } });
+    // The first message leaves its watcher running in the background, as Claude Code lists it.
+    if (n === 1) out({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'monitor', description: 'Watch run.log' }] });
     say(`Started (${text}). I'll report as events arrive.`);
     out({ type: 'result', subtype: 'success', is_error: false, result: `Started (${text}). I'll report as events arrive.` });
     if (n === 1)
       setTimeout(() => {
+        out({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
         out({ type: 'user', message: { role: 'user', content: '<task-notification>Monitor event: run finished</task-notification>' } });
         say('The run finished: all 5 courses downloaded.');
         out({ type: 'result', subtype: 'success', is_error: false, result: 'Done: all 5 courses downloaded.' });
-      }, 300);
+      }, 800);
   }
 });

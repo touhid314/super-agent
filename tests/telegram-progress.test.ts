@@ -73,12 +73,14 @@ describe('activity lines for the Telegram status message', () => {
     expect(calls.filter((c) => c.method === 'sendMessage')).toHaveLength(1);
     expect(String(calls[0].body.text)).toMatch(/Opus 9<\/b> is working · 0s/);
     expect(JSON.stringify(calls[0].body.reply_markup)).toContain('pg:stop:th1');
+    // Links in the steps get no preview (a .json URL would show up as a file to download).
+    expect(calls[0].body.link_preview_options).toEqual({ is_disabled: true });
     t.feed('th1', '→ Read app.ts\n');
-    await t.finish('th1', 'done');
+    // Done: the status message goes; the time goes into the reply instead ("Opus 9 in 0s").
+    expect(await t.finish('th1', 'done')).toMatch(/^\d+s$/);
     const last = calls.at(-1)!;
-    expect(last.method).toBe('editMessageText');
+    expect(last.method).toBe('deleteMessage');
     expect(last.body.message_id).toBe(42);
-    expect(String(last.body.text)).toMatch(/✅ <b>Opus 9<\/b> finished in \d+s/);
     expect(t.has('th1')).toBe(false);
     status = 'idle';
   });

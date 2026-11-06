@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Engine } from './engine/engine';
 import { FileBrowser } from './telegram-files';
 import { esc, markdownToTelegram } from './telegram-md';
-import { ProgressTracker } from './telegram-progress';
+import { ProgressTracker, elapsed } from './telegram-progress';
 import { TeamPanel, type TeamDeps } from './telegram-team';
 import type { Thread } from './engine/types';
 
@@ -45,7 +45,7 @@ export interface RelayDeps {
   /** Lock file shared by all VS Code windows, so only one of them answers the bot. */
   lockFile: string;
   cwd(): string | undefined;
-  /** Folder for files sent from Telegram (the workspace's .super-agent/attachments). */
+  /** Folder for files sent from Telegram (the project's attachments folder in Super Agent's data). */
   attachmentDir(): string | undefined;
   /** Model name for an account, e.g. "Opus 5.5". */
   agentName(accountId?: string): string;
@@ -68,6 +68,7 @@ const HELP = [
   '/files: explore the workspace folder',
   '/recent: recently changed files',
   '/find NAME: search the workspace',
+  '/sync: catch up with VS Code (the running thread, live)',
   '/new: start a new thread',
   '/threads: recent threads (switch with /use N)',
   '/stop: stop the current thread',
@@ -168,6 +169,7 @@ export class TelegramRelay {
         { command: 'files', description: 'Explore the workspace' },
         { command: 'recent', description: 'Recently changed files' },
         { command: 'find', description: 'Search files by name' },
+        { command: 'sync', description: 'Catch up with VS Code (the running thread)' },
         { command: 'new', description: 'Start a new thread' },
         { command: 'threads', description: 'Recent threads' },
         { command: 'stop', description: 'Stop the current thread' },
@@ -177,7 +179,7 @@ export class TelegramRelay {
     void this.poll(this.abort.signal);
     // Show "typing…" in Telegram while an agent works on one of your threads.
     this.typing = setInterval(() => {
-      if (this.state === 'on' && this.chatId !== undefined && this.d.engine.threads.some((t) => t.status === 'working' && this.isTracked(t)))
+      if (this.live && this.d.engine.threads.some((t) => t.status === 'working' && this.isTracked(t)))
         void this.api('sendChatAction', { chat_id: this.chatId, action: 'typing' }).catch(() => undefined);
     }, 4500);
   }
@@ -196,30 +198,59 @@ export class TelegramRelay {
     for (const k of ['telegram.chat', 'telegram.thread', 'telegram.pairCode']) void this.d.store.update(k, undefined);
   }
 
+  /**
+   * Whether this window sends to the chat. Any window does while Telegram is on (only receiving is one window's job,
+   * see standby): the chat follows work wherever it runs. Nothing while it's off.
+   */
+  private get live(): boolean {
+    return (this.state === 'on' || this.state === 'standby') && this.chatId !== undefined;
+  }
+
+  /**
+   * Synced with the panel: a message you send in VS Code shows in the chat too (silently: you just wrote it), and the
+   * chat follows that thread from then on: its progress and the agent's reply (with a notification) come to Telegram,
+   * and what you write in Telegram continues it.
+   */
+  async onPanelMessage(t: Thread, text: string, files: string[]): Promise<void> {
+    if (!this.live || t.helperFile) return;
+    const chat = this.chatId!;
+    const switched = t.id !== this.current;
+    this.track(t.id);
+    this.setCurrent(t.id);
+    const attached = files.map((f) => `📎 ${path.basename(f)}`).join('\n');
+    const body = [text, attached].filter(Boolean).join('\n\n');
+    const header = `<b>👤 You</b><i> · VS Code${switched ? ` · ${esc(t.title)}` : ''}</i>`;
+    await this.replyMarkdown(chat, body || '(attachments)', header, `👤 You · VS Code${switched ? ` · ${t.title}` : ''}:\n\n${body}`, undefined, true);
+    if (t.status === 'working' || t.status === 'waiting') this.progress.start(chat, t.id);
+  }
+
   /** Live agent output: drives the "… is working" status message for your threads. */
   onOutput(threadId: string, text: string): void {
-    if (this.state !== 'on' || this.chatId === undefined) return;
+    if (!this.live) return;
     const t = this.d.engine.get(threadId);
     if (!t || t.helperFile || !this.isTracked(t)) return;
-    this.progress.start(this.chatId, threadId);
+    this.progress.start(this.chatId!, threadId);
     this.progress.feed(threadId, text);
   }
 
   /** Called when any thread finishes: replies on your threads go back to Telegram. */
   async onFinished(t: Thread, outcome: 'done' | 'failed'): Promise<void> {
-    if (this.state !== 'on' || this.chatId === undefined || t.helperFile || !this.isTracked(t)) return;
+    if (!this.live || t.helperFile || !this.isTracked(t)) return;
     const last = [...t.messages].reverse().find((m) => (outcome === 'done' ? m.role === 'agent' : m.role !== 'user'));
     const stopped = outcome === 'failed' && !!last && last.role === 'system' && /stopp/i.test(last.text);
-    await this.progress.finish(t.id, outcome === 'done' ? 'done' : stopped ? 'stopped' : 'failed');
+    const took = await this.progress.finish(t.id, outcome === 'done' ? 'done' : stopped ? 'stopped' : 'failed');
     if (stopped) return; // the status message already says so
     if (!last) return;
-    const who = last.role === 'agent' ? this.d.agentName(last.accountId) : 'Super Agent';
+    // Who answered and how long it took, in the reply itself ("🤖 Opus 5.5 in 33s"): no separate "finished" message.
+    const time = took ?? (last.workedMs ? elapsed(last.workedMs) : undefined);
+    const who = last.role === 'agent' ? `🤖 ${this.d.agentName(last.accountId)}` : '⚠️ Super Agent';
+    const timed = last.role === 'agent' && time ? ` in ${time}` : '';
     const where = t.id === this.current ? '' : ` · ${t.title}`;
     // Quick ways to look at what the agent just changed.
     // (Uppercase actions open a new explorer message, so the reply itself stays.)
     const browse = { inline_keyboard: [[{ text: '🕘 Recent changes', callback_data: 'fb:R' }, { text: '📁 Files', callback_data: 'fb:D' }]] };
-    const header = `<b>${esc(who)}</b>${where ? `<i>${esc(where)}</i>` : ''}`;
-    await this.replyMarkdown(this.chatId, last.text, header, `${who}${where}:\n\n${last.text}`, outcome === 'done' ? browse : undefined);
+    const header = `<b>${esc(who)}</b>${timed}${where ? `<i>${esc(where)}</i>` : ''}`;
+    await this.replyMarkdown(this.chatId!, last.text, header, `${who}${timed}${where}:\n\n${last.text}`, outcome === 'done' ? browse : undefined);
     for (const img of imagesIn(last.text, t.cwd).slice(0, 5)) await this.sendPhoto(img).catch((e) => this.d.log(`Telegram photo: ${e.message}`));
   }
 
@@ -311,6 +342,7 @@ export class TelegramRelay {
         return void (await this.reply(chat, 'OK, your next message starts a new thread.'));
       }
       if (name === 'threads') return void (await this.reply(chat, this.threadList()));
+      if (name === 'sync') return void (await this.sync(chat));
       if (name === 'use') {
         const t = this.recent()[Number(arg) - 1];
         if (!t) return void (await this.reply(chat, 'No such thread. Send /threads to see the list.'));
@@ -357,6 +389,34 @@ export class TelegramRelay {
     if (t.status === 'working' || t.status === 'waiting') this.progress.start(chat, t.id);
   }
 
+  /**
+   * /sync: the chat catches up with VS Code. The thread working right now (else the one used last) becomes the one
+   * Telegram follows: your prompt in it shows here, then its live progress with every step so far (or, if it's done,
+   * its answer), and from then on it's synced like any thread you started here.
+   */
+  private async sync(chat: number): Promise<void> {
+    const top = this.d.engine.threads.filter((t) => !t.parentId && !t.helperFile && t.messages.length > 0);
+    const running = top.filter((t) => t.status !== 'idle').sort((a, b) => (b.runStartedAt ?? 0) - (a.runStartedAt ?? 0))[0];
+    const t = running ?? [...top].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (!t) return void (await this.reply(chat, 'Nothing to sync: no conversations in VS Code yet.'));
+    this.track(t.id);
+    this.setCurrent(t.id);
+    const at = t.messages.map((m) => m.role).lastIndexOf('user');
+    const prompt = at >= 0 ? t.messages[at] : undefined;
+    const header = `<b>👤 You</b><i> · ${esc(t.title)}</i>`;
+    if (prompt) await this.replyMarkdown(chat, prompt.text, header, `👤 You · ${t.title}:\n\n${prompt.text}`, undefined, true);
+    if (t.status !== 'idle') {
+      this.progress.start(chat, t.id, t.work?.startedAt, this.d.engine.liveActivity(t.id));
+      return;
+    }
+    // Already done: its answer to that prompt.
+    const answer = t.messages.slice(at + 1).reverse().find((m) => m.role === 'agent');
+    if (!answer) return void (await this.reply(chat, `Synced with "${t.title}". Nothing is running in it now.`));
+    const who = `🤖 ${this.d.agentName(answer.accountId)}`;
+    const time = answer.workedMs ? ` in ${elapsed(answer.workedMs)}` : '';
+    await this.replyMarkdown(chat, answer.text, `<b>${esc(who)}</b>${time}`, `${who}${time}:\n\n${answer.text}`);
+  }
+
   // ------------------------------------------------------------ helpers
 
   private isTracked(t: Thread): boolean {
@@ -398,7 +458,7 @@ export class TelegramRelay {
    * Sends an agent's Markdown reply with real formatting (bold, links, highlighted code blocks).
    * If Telegram rejects the formatting, the rest goes as plain text, so the reply always arrives.
    */
-  private async replyMarkdown(chat: number, md: string, header: string, plain: string, markup?: unknown): Promise<void> {
+  private async replyMarkdown(chat: number, md: string, header: string, plain: string, markup?: unknown, silent = false): Promise<void> {
     const parts = markdownToTelegram(md, header);
     for (const [i, part] of parts.entries()) {
       try {
@@ -407,21 +467,28 @@ export class TelegramRelay {
           text: part,
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
+          ...(silent ? { disable_notification: true } : {}),
           ...(markup && i === parts.length - 1 ? { reply_markup: markup } : {}),
         });
       } catch (e) {
         this.d.log(`Telegram formatting rejected (${(e as Error).message}); sending as plain text.`);
         const rest = parts.slice(i).map((p) => p.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
-        return this.reply(chat, i === 0 ? plain : rest.join('\n'), markup);
+        return this.reply(chat, i === 0 ? plain : rest.join('\n'), markup, silent);
       }
     }
   }
 
   /** Sends text (split to fit); optional buttons go under the last part. */
-  private async reply(chat: number, text: string, markup?: unknown): Promise<void> {
+  private async reply(chat: number, text: string, markup?: unknown, silent = false): Promise<void> {
     const parts = chunks(text);
     for (const [i, part] of parts.entries())
-      await this.api('sendMessage', { chat_id: chat, text: part, link_preview_options: { is_disabled: true }, ...(markup && i === parts.length - 1 ? { reply_markup: markup } : {}) });
+      await this.api('sendMessage', {
+        chat_id: chat,
+        text: part,
+        link_preview_options: { is_disabled: true },
+        ...(silent ? { disable_notification: true } : {}),
+        ...(markup && i === parts.length - 1 ? { reply_markup: markup } : {}),
+      });
   }
 
   private async sendPhoto(file: string): Promise<void> {

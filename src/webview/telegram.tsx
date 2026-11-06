@@ -5,7 +5,7 @@ export interface TelegramView {
   /** paused: turned off with one tap; the bot and the paired chat are kept, so turning it on needs no pairing. */
   state: 'off' | 'pairing' | 'on' | 'standby' | 'error' | 'paused';
   bot?: string;
-  /** A chat is paired (set while paused). */
+  /** A chat is paired (kept while off, so turning it on needs no pairing). */
   paired?: boolean;
   /** t.me link that pairs your chat when opened (scan it with your phone). */
   pairLink?: string;
@@ -28,7 +28,7 @@ function Qr({ text, size = 148 }: { text: string; size?: number }) {
 }
 
 /** Connect / pair / manage the Telegram relay, right in the panel. */
-export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: unknown) => void; onClose: () => void }) {
+export function TelegramCard({ t, send }: { t: TelegramView; send: (m: unknown) => void }) {
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const open = (url: string) => send({ type: 'openLink', url });
@@ -39,11 +39,23 @@ export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: 
     setTimeout(() => setBusy(false), 4000);
   };
 
+  // On or off, a set-up bot shows the same header: its name, whether it's on, and that your chat is paired.
+  const on = t.state === 'on' || t.state === 'standby';
+  const bot = (
+    <div className="tg-bot">
+      <div className="tg-bot-name">
+        <b>@{t.bot ?? 'your bot'}</b>
+        <span className={`tg-badge ${on ? 'on' : 'off'}`}>{on ? 'On' : 'Off'}</span>
+      </div>
+      <div className={t.paired ? 'tg-ok' : 'muted'}>{t.paired ? '✓ Paired with your chat' : 'No chat paired yet'}</div>
+    </div>
+  );
+
   let body;
-  if (t.state === 'on' || t.state === 'standby') {
+  if (on) {
     body = (
       <>
-        <div className="tg-ok">✓ Connected to @{t.bot ?? 'your bot'}</div>
+        {bot}
         <p className="muted">Message the bot from your phone: the team works here on this laptop and replies in Telegram.</p>
         {t.bot && (
           <div className="tg-qr-row">
@@ -65,9 +77,10 @@ export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: 
   } else if (t.state === 'paused') {
     body = (
       <>
-        <div className="tg-step">
-          Telegram is off: nothing is sent to @{t.bot ?? 'your bot'} and it doesn't answer. It stays {t.paired ? 'paired' : 'set up'}, so connecting again takes one tap.
-        </div>
+        {bot}
+        <p className="muted">
+          Off: the bot doesn't answer and nothing is sent to it. {t.paired ? 'It stays paired' : 'It stays set up'}, so turning it on takes one tap.
+        </p>
         <div className="tg-actions">
           <button className="ghost" onClick={() => send({ type: 'telegramResume' })}>
             Connect
@@ -148,13 +161,9 @@ export function TelegramCard({ t, send, onClose }: { t: TelegramView; send: (m: 
   }
 
   return (
-    <div className="tg-card">
+    <div className="overlay tg-card">
       <div className="tg-head">
         <b>Telegram</b>
-        <span className="spacer" />
-        <button className="x" title="Close" onClick={onClose}>
-          ×
-        </button>
       </div>
       {body}
     </div>

@@ -7,6 +7,7 @@ import type { RunRequest, RunResult } from '../src/core/agents/runner';
 import type { Account } from '../src/core/types';
 import { ChangeTracker } from '../src/engine/changes';
 import { Engine, type EngineDeps } from '../src/engine/engine';
+import { projectDir } from '../src/core/store/paths';
 import type { Thread } from '../src/engine/types';
 
 const acc = (id: string, kind: Account['kind'] = 'codex', role: Account['role'] = 'worker'): Account => ({ id, kind, label: id, home: null, role, createdAt: 0 });
@@ -45,7 +46,9 @@ function setup(accounts: Account[], agent: (req: RunRequest, n: number) => Promi
   const idle = async (pred: () => boolean = () => engine.threads.every((t) => t.status === 'idle')) => {
     for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
   };
-  return { engine, runs, finished, cwd, pool, idle };
+  // Super Agent's files for the project (hand-offs, team status) live outside it, in its data folder.
+  const work = projectDir(cwd, dir);
+  return { engine, runs, finished, cwd, pool, idle, work };
 }
 
 const msgs = (t: Thread, role: string) => t.messages.filter((m) => m.role === role).map((m) => m.text);
@@ -153,8 +156,8 @@ describe('harmonic delegation', () => {
     const h = setup([acc('a', 'codex', 'master'), acc('b', 'claude')], async (req) => {
       if (req.prompt.includes('Helper report')) return ok('tests integrated', 'sa');
       if (req.account.id === 'a') {
-        fs.mkdirSync(path.join(req.cwd, '.super-agent', 'handoff'), { recursive: true });
-        fs.writeFileSync(path.join(req.cwd, '.super-agent', 'handoff', 'tests.md'), '# Write tests\nFiles: tests/**\nCover the parser.');
+        fs.mkdirSync(path.join(h.work, 'handoff'), { recursive: true });
+        fs.writeFileSync(path.join(h.work, 'handoff', 'tests.md'), '# Write tests\nFiles: tests/**\nCover the parser.');
         await gate;
         return ok('main work done', 'sa');
       }
@@ -167,7 +170,7 @@ describe('harmonic delegation', () => {
     expect(helper.parentId).toBe(t.id);
     expect(helper.leadId).toBe('b');
     expect(h.runs.find((r) => r.account.id === 'b')!.prompt).toContain('a hand-off from');
-    expect(fs.readFileSync(path.join(h.cwd, '.super-agent', 'handoff', 'tests.result.md'), 'utf8')).toContain('tests written');
+    expect(fs.readFileSync(path.join(h.work, 'handoff', 'tests.result.md'), 'utf8')).toContain('tests written');
     // Leading comes first: the lead (whose CLI can't take messages mid-turn) stops and resumes with the report at once.
     await h.idle(() => msgs(t, 'agent').length > 0);
     const report = h.runs.find((r) => r.prompt.includes('Helper report'))!;
@@ -213,10 +216,10 @@ describe('coordination with minimal friction', () => {
     const h = setup([acc('a', 'codex', 'master'), acc('b', 'claude'), acc('c', 'codex')], async (req) => {
       if (req.prompt.includes('Helper report')) return ok('integrated', 'x');
       // Each agent finds its own hand-off folder in its instructions (follow-ups resume the session, so they have none).
-      const dir = /`(\.super-agent\/handoff\/[^`/]+)\/?`/.exec(req.prompt)![1];
+      const dir = /`([^`]*\/handoff\/[^`/]+)\/?`/.exec(req.prompt)![1];
       const handOff = (name: string, body: string) => {
-        fs.mkdirSync(path.join(req.cwd, dir), { recursive: true });
-        fs.writeFileSync(path.join(req.cwd, dir, name), body);
+        fs.mkdirSync(path.join(dir), { recursive: true });
+        fs.writeFileSync(path.join(dir, name), body);
       };
       if (req.prompt.includes('# Test the API')) return ok('tests written', 'sc');
       if (req.prompt.includes('# Build the API')) {
@@ -263,7 +266,7 @@ describe('the whole team, and one final answer', () => {
     const h = setup([acc('a', 'codex', 'master'), acc('b', 'claude'), acc('c', 'antigravity')], async () => ok('done', 's'));
     h.engine.send(undefined, 'review all candidate papers', h.cwd);
     await h.idle();
-    expect(h.runs[0].prompt).toMatch(/Team right now: free: b, c\. Hand-offs: `\.super-agent\/handoff\/[^`]+\/` · live status: `\.super-agent\/team\.md`/);
+    expect(h.runs[0].prompt).toMatch(/Team right now: free: b, c\. Hand-offs: `[^`]*\/handoff\/[^`]+\/` · live status: `[^`]*\/team\.md`/);
   });
 
   it('keeps a live team status every agent can read: who is free or busy, and each hand-off', async () => {
@@ -271,9 +274,9 @@ describe('the whole team, and one final answer', () => {
     const gate = new Promise<void>((r) => (release = r));
     const h = setup([acc('a', 'codex', 'master'), acc('b', 'claude'), acc('c', 'claude')], async (req) => {
       if (req.prompt.includes('a hand-off from')) return ok('reviewed', 'sb');
-      const dir = /`(\.super-agent\/handoff\/[^`/]+)\//.exec(req.prompt)![1];
-      fs.mkdirSync(path.join(req.cwd, dir), { recursive: true });
-      fs.writeFileSync(path.join(req.cwd, dir, 'p2.md'), '# Review paper 2');
+      const dir = /`([^`]*\/handoff\/[^`/]+)\//.exec(req.prompt)![1];
+      fs.mkdirSync(path.join(dir), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'p2.md'), '# Review paper 2');
       await gate;
       return ok('done', 'sa');
     });
@@ -281,7 +284,7 @@ describe('the whole team, and one final answer', () => {
     await h.idle(() => h.engine.threads.some((x) => x.helperFile && x.status === 'idle' && x.messages.some((m) => m.role === 'agent')));
     const status = h.engine.teamStatus(h.cwd);
     expect(status).toContain(`- a: busy on "${t.title}"`);
-    expect(status).toMatch(/- \[done: b\] Review paper 2 \(for "review papers"\): \.super-agent\/handoff\/[^/]+\/p2\.md → .*p2\.result\.md/);
+    expect(status).toMatch(/- \[done: b\] Review paper 2 \(for "review papers"\): .*\/handoff\/[^/]+\/p2\.md → .*p2\.result\.md/);
     expect(status).toContain('- c: free');
     release();
     await h.idle();
@@ -294,9 +297,9 @@ describe('the whole team, and one final answer', () => {
     const steered: string[] = [];
     const h = setup([acc('a', 'codex', 'master'), acc('b', 'claude')], async (req) => {
       if (req.prompt.includes('a hand-off from')) return ok('paper 2: included', 'sb');
-      const dir = /`(\.super-agent\/handoff\/[^`/]+)\//.exec(req.prompt)![1];
-      fs.mkdirSync(path.join(req.cwd, dir), { recursive: true });
-      fs.writeFileSync(path.join(req.cwd, dir, 'p2.md'), '# Review paper 2');
+      const dir = /`([^`]*\/handoff\/[^`/]+)\//.exec(req.prompt)![1];
+      fs.mkdirSync(path.join(dir), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'p2.md'), '# Review paper 2');
       await gate;
       return ok('all done, paper 2 included', 'sa');
     });
@@ -321,9 +324,9 @@ describe('the whole team, and one final answer', () => {
         await helperGate;
         return ok('paper B reviewed', 'sb');
       }
-      const dir = /`(\.super-agent\/handoff\/[^`/]+)\/?`/.exec(req.prompt)![1];
-      fs.mkdirSync(path.join(req.cwd, dir), { recursive: true });
-      fs.writeFileSync(path.join(req.cwd, dir, 'paper-b.md'), '# Review paper B');
+      const dir = /`([^`]*\/handoff\/[^`/]+)\/?`/.exec(req.prompt)![1];
+      fs.mkdirSync(path.join(dir), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'paper-b.md'), '# Review paper B');
       await new Promise((r) => setTimeout(r, 600)); // the helper is picked up while the lead works
       return ok('paper A reviewed', 'sa');
     });
@@ -377,9 +380,9 @@ describe('batches flow through one queue', () => {
         return ok(`${item}: done`, `s-${item}`);
       }
       // The lead: queue papers 2..7 first, then review paper 1 itself (quickly, so items are still queued after).
-      const dir = /`(\.super-agent\/handoff\/[^`/]+)\/?`/.exec(req.prompt)![1];
-      fs.mkdirSync(path.join(req.cwd, dir), { recursive: true });
-      for (let i = 2; i <= 7; i++) fs.writeFileSync(path.join(req.cwd, dir, `p${i}.md`), `# Review paper ${i}`);
+      const dir = /`([^`]*\/handoff\/[^`/]+)\/?`/.exec(req.prompt)![1];
+      fs.mkdirSync(path.join(dir), { recursive: true });
+      for (let i = 2; i <= 7; i++) fs.writeFileSync(path.join(dir, `p${i}.md`), `# Review paper ${i}`);
       await sleep(600);
       return ok('paper 1 reviewed', 'sl');
     });
@@ -744,5 +747,127 @@ describe('every agent out of usage: the work resumes by itself', () => {
     for (let i = 0; i < 100 && !msgs(t2, 'agent').length; i++) await new Promise((r) => setTimeout(r, 20));
     expect(msgs(t2, 'agent')).toEqual(['finished']);
     e2.dispose();
+  });
+});
+
+describe('an agent asks to step outside its sandbox', () => {
+  it('shows the request on the thread, passes your answer back, and the turn carries on', async () => {
+    const answers: string[] = [];
+    const h = setup([acc('a', 'codex', 'master')], async (req) => {
+      answers.push(await req.onApproval!({ kind: 'command', command: 'cp ui ../other', cwd: 'C:\app' }));
+      return ok('copied', 's');
+    }, { onApproval: (t) => answers.push(`asked on ${t.title}`) });
+    const t = h.engine.send(undefined, 'move the ui', h.cwd);
+    await h.idle(() => !!t.approval);
+    expect(t.approval).toMatchObject({ kind: 'command', command: 'cp ui ../other' });
+    h.engine.answerApproval(t.id, t.approval!.id, 'accept');
+    await h.idle();
+    expect(answers).toEqual(['asked on move the ui', 'accept']);
+    expect(t.approval).toBeUndefined();
+    expect(msgs(t, 'agent')).toEqual(['copied']);
+  });
+
+  it('several requests are shown one at a time; stopping withdraws the rest', async () => {
+    const answers: string[] = [];
+    const h = setup([acc('a', 'codex', 'master')], async (req) => {
+      const both = await Promise.all([req.onApproval!({ kind: 'files', paths: ['x'] }), req.onApproval!({ kind: 'files', paths: ['y'] })]);
+      answers.push(...both);
+      return new Promise<RunResult>(() => undefined); // keeps working until stopped
+    });
+    const t = h.engine.send(undefined, 'edit', h.cwd);
+    await h.idle(() => !!t.approval);
+    expect(t.approval?.paths).toEqual(['x']);
+    h.engine.answerApproval(t.id, t.approval!.id, 'decline');
+    expect(t.approval?.paths).toEqual(['y']);
+    h.engine.stop(t.id);
+    await h.idle();
+    expect(answers).toEqual(['decline', 'cancel']);
+    expect(t.approval).toBeUndefined();
+    expect(msgs(t, 'system')).toContain('Stopped.');
+  });
+});
+
+describe('Antigravity narrates its work', () => {
+  it('is asked to say what it is doing as it goes (it works silently otherwise); Claude Code and Codex are not', async () => {
+    const h = setup([acc('g', 'antigravity', 'master'), acc('c', 'claude', 'off')], async () => ok('done', 's'));
+    h.engine.send(undefined, 'fix the tests', h.cwd);
+    await h.idle();
+    expect(h.runs[0].prompt).toContain('give a short progress update');
+    const h2 = setup([acc('c', 'claude', 'master')], async () => ok('done', 's'));
+    h2.engine.send(undefined, 'fix the tests', h2.cwd);
+    await h2.idle();
+    expect(h2.runs[0].prompt).not.toContain('progress update');
+  });
+});
+
+describe('a teammate joins mid-turn', () => {
+  it('tells the running lead (with how to hand off, since it started alone) and resumes it when its CLI cannot be steered', async () => {
+    const b = acc('b', 'codex', 'off');
+    let release: () => void = () => undefined;
+    const h = setup([acc('a', 'claude', 'master'), b], (req, n) =>
+      n === 1 ? new Promise<RunResult>((r) => (release = () => r(ok('never', 's')))) : Promise.resolve(ok(`answer ${n}`, 's')),
+    );
+    const t = h.engine.send(undefined, 'big batch job', h.cwd);
+    await h.idle(() => t.status === 'working');
+    expect(h.runs[0].prompt).not.toContain('To give a teammate a task'); // alone: no team instructions
+    h.engine.teamChanged(); // first check only records the team
+    b.role = 'worker';
+    h.engine.teamChanged();
+    h.engine.teamChanged(); // no change: nothing more
+    await h.idle(() => h.runs.length === 2);
+    release();
+    await h.idle(() => t.status === 'idle');
+    expect(h.runs).toHaveLength(2);
+    expect(h.runs[1].prompt).toContain('b just joined your team');
+    expect(h.runs[1].prompt).toContain('To give a teammate a task, write a Markdown file');
+    expect(msgs(t, 'system')).toContain('b joined the team: a can hand work to it now.');
+  });
+
+  it('steers the news into the running turn when its CLI takes messages', async () => {
+    const b = acc('b', 'codex', 'off');
+    let release: () => void = () => undefined;
+    const h = setup([acc('a', 'codex', 'master'), acc('c'), b], (req, n) =>
+      n === 1 ? new Promise<RunResult>((r) => (release = () => r(ok('done', 's')))) : Promise.resolve(ok(`answer ${n}`, 's')),
+    );
+    const steered: string[] = [];
+    (h.engine as any).d.steer = async (_id: string, text: string) => (steered.push(text), true);
+    const t = h.engine.send(undefined, 'big batch job', h.cwd);
+    await h.idle(() => t.status === 'working');
+    h.engine.teamChanged();
+    b.role = 'worker';
+    h.engine.teamChanged();
+    await h.idle(() => steered.length > 0);
+    expect(steered[0]).toContain('b just joined your team');
+    expect(steered[0]).not.toContain('To give a teammate a task'); // it already knows how (c was on the team)
+    release();
+    await h.idle();
+    expect(h.runs).toHaveLength(1); // not interrupted
+  });
+});
+
+describe('hand-offs with nobody else on the team', () => {
+  it("aren't queued for a teammate who never comes: the lead is told to do them itself", async () => {
+    let release: () => void = () => undefined;
+    const h = setup([acc('a', 'codex', 'master'), acc('b', 'codex', 'off')], (req, n) =>
+      n === 1 ? new Promise<RunResult>((r) => (release = () => r(ok('done', 's')))) : Promise.resolve(ok(`answer ${n}`, 's')),
+    );
+    const steered: string[] = [];
+    (h.engine as any).d.steer = async (_id: string, text: string) => (steered.push(text), true);
+    const t = h.engine.send(undefined, 'two features', h.cwd);
+    await h.idle(() => t.status === 'working');
+    t.teamTold = true; // its session remembers teammates from an earlier turn
+    const dir = path.join(h.work, 'handoff', t.id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'voice.md'), '# Add a Change voice button\nFiles: src/voice.ts');
+    await h.idle(() => steered.length > 0);
+    expect(h.engine.threads.filter((x) => x.helperFile)).toHaveLength(0); // no "Next free agent" helper
+    expect(steered[0]).toContain('nobody took these hand-offs');
+    expect(steered[0]).toContain('Add a Change voice button');
+    expect(msgs(t, 'system')).toContain('Nobody else is on the team, so a does this itself: Add a Change voice button.');
+    release();
+    await h.idle();
+    h.engine.send(t.id, 'next', h.cwd);
+    await h.idle();
+    expect(h.runs.at(-1)!.prompt).toContain('You have no teammates right now'); // and every turn says so
   });
 });

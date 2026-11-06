@@ -1,11 +1,12 @@
 import type { AgentKind } from '../core/types';
+import type { ApprovalAsk } from '../core/agents/runner';
 
 export interface ThreadMsg {
   at: number;
   role: 'user' | 'agent' | 'system';
   text: string;
   accountId?: string;
-  /** Files the user attached (absolute paths, copied into the workspace's .super-agent/attachments). */
+  /** Files the user attached (absolute paths, copied into the project's attachments folder in Super Agent's data). */
   attachments?: string[];
   /** On the message that ended a turn: everything the agents did and said on the way (Codex-style "Worked for"). */
   activity?: string[];
@@ -20,6 +21,8 @@ export interface RunChanges {
   after: string;
   files: { path: string; add: number; del: number; binary?: boolean }[];
   undone?: boolean;
+  /** Its snapshots were deleted (only a workspace's last few turns are kept): no more undo/redo or diff. */
+  expired?: boolean;
 }
 
 /** The CLI conversation a thread lives in, so the next turn (or the next agent) keeps its full context. */
@@ -60,6 +63,10 @@ export interface Thread {
   work?: { startedAt: number; items: string[]; before?: string };
   /** The run was stopped to take a new user message: it resumes at once instead of reporting "Stopped". */
   restarting?: boolean;
+  /** Background work the agent left running after its reply; it continues by itself when that work ends. */
+  waitingOn?: string[];
+  /** The agent is waiting for you to allow something its sandbox blocks (one at a time; more may be queued). */
+  approval?: ApprovalAsk & { id: string; at: number };
   /** The lead's turn ended while helpers still work: the final answer waits for them (status is 'waiting'). */
   awaitingHelpers?: boolean;
   /** Reports from finished helpers, folded into the next turn. */
@@ -68,6 +75,10 @@ export interface Thread {
   retried?: boolean;
   /** Set after this thread's CLI was updated for an "out of date" error (once per answer, so no update loops). */
   cliUpdated?: boolean;
+  /** Its current agent session was told how to hand work to teammates. */
+  teamTold?: boolean;
+  /** Teammates the running turn was told about (a newcomer is announced to it mid-turn). */
+  knownTeam?: string[];
   /** For helper threads: the hand-off request file the lead wrote. */
   helperFile?: string;
   runId?: string;

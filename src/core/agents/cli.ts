@@ -74,7 +74,9 @@ export function accountEnv(account: Account, base: NodeJS.ProcessEnv = process.e
  * Standard mode for Claude Code: any shell command and edits in the workspace, plus the Temp folder for scratch files.
  * (A short command allowlist kept refusing everyday things like `cd … &&`, sed or grep; headless runs can't ask.)
  */
-const CLAUDE_STANDARD = ['--add-dir', os.tmpdir(), '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash'];
+const CLAUDE_STANDARD = (dirs: string[]) => ['--add-dir', os.tmpdir(), ...dirs, '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash'];
+/** Approve for me: Claude Code's auto mode, where its safety classifier decides on each action instead of you. */
+const CLAUDE_AUTO = (dirs: string[]) => ['--add-dir', os.tmpdir(), ...dirs, '--permission-mode', 'auto'];
 
 export interface ArgsInput {
   kind: AgentKind;
@@ -92,6 +94,8 @@ export interface ArgsInput {
   newSessionId?: string;
   /** Give the agent browser tools. Claude reads them from configFile (see writeBrowserConfig). */
   browser?: { outputDir: string; configFile: string };
+  /** Folders outside the workspace the agent may also write to (Super Agent's files for this project). */
+  dirs?: string[];
 }
 
 /** Pinned so every agent gets the same, known-good browser tools. */
@@ -149,8 +153,11 @@ export function codexBrowser(outputDir: string): string[] {
 export function buildArgs(i: ArgsInput): string[] {
   const effort = i.effort ? (i.kind === 'codex' ? ['-c', `model_reasoning_effort='${i.effort}'`] : ['--effort', i.effort]) : [];
   const model = [...(i.model ? (i.kind === 'claude' || i.kind === 'antigravity' ? ['--model', i.model] : ['-m', i.model]) : []), ...effort];
+  const dirs = i.dirs ?? [];
   if (i.kind === 'codex') {
     const browser = i.browser ? codexBrowser(i.browser.outputDir) : [];
+    // TOML literal strings: no escaping of Windows backslashes.
+    const roots = dirs.length && i.mode !== 'read-only' && i.autonomy !== 'full' ? ['-c', `sandbox_workspace_write.writable_roots=[${dirs.map((d) => `'${d}'`).join(',')}]`] : [];
     const sandbox =
       i.mode === 'read-only'
         ? ['--sandbox', 'read-only']
@@ -160,18 +167,20 @@ export function buildArgs(i: ArgsInput): string[] {
     if (i.resume) {
       // "exec resume" has no --sandbox/-C: set the sandbox through config; the cwd comes from the process.
       const mode = i.mode === 'read-only' ? ['-c', 'sandbox_mode="read-only"'] : i.autonomy === 'full' ? ['--dangerously-bypass-approvals-and-sandbox'] : ['-c', 'sandbox_mode="workspace-write"'];
-      return ['exec', 'resume', i.resume, '--skip-git-repo-check', ...mode, ...browser, ...model, '-o', i.lastMessageFile, '-'];
+      return ['exec', 'resume', i.resume, '--skip-git-repo-check', ...mode, ...roots, ...browser, ...model, '-o', i.lastMessageFile, '-'];
     }
-    return ['exec', '--skip-git-repo-check', '--color', 'never', '-C', i.cwd, ...sandbox, ...browser, ...model, '-o', i.lastMessageFile, '-'];
+    return ['exec', '--skip-git-repo-check', '--color', 'never', '-C', i.cwd, ...sandbox, ...roots, ...browser, ...model, '-o', i.lastMessageFile, '-'];
   }
   if (i.kind === 'claude') {
     const browserTools = i.browser ? ['mcp__playwright'] : [];
     const perms =
       i.mode === 'read-only'
-        ? ['--permission-mode', 'dontAsk', '--allowedTools', 'Read', 'Glob', 'Grep', ...browserTools]
+        ? [...(dirs.length ? ['--add-dir', ...dirs] : []), '--permission-mode', 'dontAsk', '--allowedTools', 'Read', 'Glob', 'Grep', ...browserTools]
         : i.autonomy === 'full'
           ? ['--dangerously-skip-permissions']
-          : [...CLAUDE_STANDARD, ...browserTools];
+          : i.autonomy === 'auto'
+            ? [...CLAUDE_AUTO(dirs), ...(browserTools.length ? ['--allowedTools', ...browserTools] : [])]
+            : [...CLAUDE_STANDARD(dirs), ...browserTools];
     // Variadic options (--mcp-config, --allowedTools) end at the next flag, so --allowedTools comes last.
     const session = i.resume ? ['--resume', i.resume] : i.newSessionId ? ['--session-id', i.newSessionId] : [];
     const browser = i.browser ? ['--mcp-config', i.browser.configFile] : [];
@@ -181,12 +190,13 @@ export function buildArgs(i: ArgsInput): string[] {
   // Headless agy can't ask for permission, so anything not allowed up front is silently denied and the run ends
   // with no answer. Standard mode matches Codex's workspace-write: commands run, but inside agy's sandbox.
   // (Prefix rules like command(npm test) don't match headless commands; only command(*) does.)
+  // agy has no automatic reviewer ("--mode auto is not available for this account"): approve-for-me runs as standard.
   const standard = i.mode !== 'read-only' && i.autonomy !== 'full';
   const perms = i.mode === 'read-only' ? ['--mode', 'plan'] : i.autonomy === 'full' ? ['--dangerously-skip-permissions'] : ['--mode', 'accept-edits', '--sandbox'];
   // The browser (registered by ensureAgyBrowser) is allowed per run, like commands.
   const allow = [...(standard ? ['command(*)'] : []), ...(i.browser ? ['mcp(playwright/*)'] : [])];
   const settings = allow.length ? ['--settings', JSON.stringify({ permissions: { allow } })] : [];
-  return ['--output-format', 'stream-json', ...(i.resume ? ['--conversation', i.resume] : []), ...perms, ...settings, ...model];
+  return ['--output-format', 'stream-json', ...(i.resume ? ['--conversation', i.resume] : []), ...perms, ...dirs.flatMap((d) => ['--add-dir', d]), ...settings, ...model];
 }
 
 /** Arguments that start the CLI's interactive sign-in flow. */

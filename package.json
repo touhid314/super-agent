@@ -77,10 +77,6 @@
         "title": "Super Agent: Add Agent Account"
       },
       {
-        "command": "superAgent.importLogins",
-        "title": "Super Agent: Import Existing Logins"
-      },
-      {
         "command": "superAgent.stopAll",
         "title": "Super Agent: Stop All Agents"
       },

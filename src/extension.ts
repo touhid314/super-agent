@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { AccountService } from './core/agents/accounts';
-import { ensureAgyBrowser } from './core/agents/cli';
+import { CLI_META, ensureAgyBrowser } from './core/agents/cli';
 import { AccountPool } from './core/agents/pool';
-import { HotAgents } from './core/agents/hot';
+import { HotAgents, askSummary } from './core/agents/hot';
+import { killOrphans } from './core/agents/orphans';
 import { cancelRun, cancelAll, runAgent } from './core/agents/runner';
 import { UsageService } from './core/agents/usage';
 import { ConfigStore } from './core/store/config';
-import { paths } from './core/store/paths';
-import { AGENT_KINDS, type AgentKind } from './core/types';
-import { ChangeTracker } from './engine/changes';
+import { paths, projectDir } from './core/store/paths';
+import { AGENT_KINDS, type Account, type AgentKind } from './core/types';
+import { ChangeTracker, UNDO_TURNS } from './engine/changes';
 import { CliUpdater } from './core/agents/updater';
 import { Engine } from './engine/engine';
 import { FileStore, TelegramRelay, uniqueIn } from './telegram';
@@ -40,6 +41,16 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   accounts.refreshClis();
   accounts.bootstrap();
+  if (config.droppedShared.length) {
+    // Older versions used the CLIs' default logins, which change whenever anything else on the PC signs in there.
+    const names = config.droppedShared.map((a) => a.label).join(', ');
+    void vscode.window
+      .showWarningMessage(
+        `Super Agent removed ${names}: it used the CLI's shared login, so signing in anywhere else on this PC switched its account. Add it again and sign in; it then keeps a login of its own. Your CLI login itself is unchanged.`,
+        'Add account',
+      )
+      .then((pick) => pick && vscode.commands.executeCommand('superAgent.addAccount'));
+  }
 
   let view: vscode.WebviewView | undefined;
   // Created once the engine exists; state pushes before that just report it as off.
@@ -68,16 +79,20 @@ export function activate(context: vscode.ExtensionContext): void {
   // Agents stay running between messages (no 2–4 s CLI start per turn); each team member is kept warm.
   const hot = new HotAgents(paths.data);
   context.subscriptions.push({ dispose: () => hot.dispose() });
+  // Agents an earlier session left running (it ended without stopping them) would keep editing on their own, next to
+  // this window's agents in the same conversation: stop them.
+  void killOrphans(paths.data).then((n) => n && log.appendLine(`Stopped ${n} agent process(es) left running by an earlier session.`));
   let warmedAt = 0;
   const warmTeam = () => {
     const folder = cwd();
     if (!folder || config.settings.hotAgents === false || Date.now() - warmedAt < 10000) return;
     warmedAt = Date.now();
-    const team = config.accounts.filter((a) => a.role !== 'off').flatMap((account) => {
+    // (Signed-out accounts aren't kept ready: nothing can run on them until they sign in again.)
+    const team = config.accounts.filter((a) => a.role !== 'off' && pool.get(a.id).login !== 'signed-out').flatMap((account) => {
       const cliPath = accounts.cliPath(account.kind);
       return cliPath ? [{ account, cliPath }] : [];
     });
-    hot.warm(team, { cwd: folder, autonomy: config.settings.autonomy, browser: config.settings.browserTools !== false });
+    hot.warm(team, { cwd: folder, autonomy: config.settings.autonomy, browser: true });
   };
 
   // Agent CLIs: updated when a provider says one is too old, and once a day in the background (when idle).
@@ -138,17 +153,36 @@ export function activate(context: vscode.ExtensionContext): void {
       telegram?.onOutput(threadId, text);
     },
     onFinished: (t, outcome) => onFinished(t, outcome),
+    onApproval: (t) => onApproval(t),
   });
   const eng = engine;
   // An agent that already replied carries on by itself (its background task woke it): show it as a new turn.
   hot.onWake = (w) => void eng.wake(w.account.id, w.sessionId);
+  // …and while it waits for that work, its thread says so.
+  hot.onBackground = (b) => eng.backgroundTasks(b.account.id, b.sessionId, b.tasks);
   // Usage refreshes push state, so they start only once the engine exists.
   void usage.refreshAll();
   const usageTimer = setInterval(() => void usage.refreshAll(), 5 * 60000);
 
   function onFinished(t: Thread, outcome: 'done' | 'failed'): void {
-    if (config.settings.soundOnDone) post({ type: 'chime', kind: outcome === 'done' ? (t.helperFile ? 'task' : 'done') : 'failed' });
+    // Only your own threads chime: a helper finishing isn't the work being done (its lead carries on).
+    if (config.settings.soundOnDone && !t.helperFile && !t.parentId) post({ type: 'chime', kind: outcome === 'done' ? 'done' : 'failed' });
     void telegram?.onFinished(t, outcome).catch((e) => log.appendLine(`Telegram: ${e.message}`));
+  }
+
+  /** An agent waits for you to allow something: the card is on its thread; with the panel hidden, ask here too. */
+  function onApproval(t: Thread): void {
+    const a = t.approval;
+    if (!a) return;
+    if (config.settings.soundOnDone) post({ type: 'chime', kind: 'task' });
+    if (view?.visible) return;
+    const who = t.leadId ? modelName(t.leadId) : 'An agent';
+    const what = askSummary(a);
+    void vscode.window
+      .showWarningMessage(`${who} asks to ${what.length > 160 ? `${what.slice(0, 160)}…` : what}${a.reason ? ` (${a.reason})` : ''}`, 'Allow', 'Allow for this session', 'Deny')
+      .then((pick) => {
+        if (pick) eng.answerApproval(t.id, a.id, pick === 'Allow' ? 'accept' : pick === 'Deny' ? 'decline' : 'acceptForSession');
+      });
   }
 
   // ---------------------------------------------------------------- Telegram relay
@@ -167,7 +201,7 @@ export function activate(context: vscode.ExtensionContext): void {
     attachmentDir: () => {
       const folder = cwd();
       if (!folder) return undefined;
-      const dir = path.join(folder, '.super-agent', 'attachments');
+      const dir = path.join(projectDir(folder), 'attachments');
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     },
@@ -236,6 +270,7 @@ export function activate(context: vscode.ExtensionContext): void {
     return {
       state: !running ? relay.state : !paired ? 'pairing' : relay.state === 'standby' ? 'standby' : 'on',
       bot,
+      paired,
       code: running && !paired ? code : undefined,
       // Scanning this opens the bot and sends "/start CODE", which pairs your chat.
       pairLink: running && !paired && bot && code ? `https://t.me/${bot}?start=${code}` : undefined,
@@ -313,6 +348,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   function pushState(): void {
     warmTeam(); // cheap when everyone is already warm; picks up new accounts, models and settings
+    engine?.teamChanged(); // a teammate turned on or came back: running leads hear of it at once
     const working = eng.working;
     status.text = working ? `$(sync~spin) Super Agent: ${working} working` : '$(organization) Super Agent';
     status.tooltip = config.accounts
@@ -337,7 +373,7 @@ export function activate(context: vscode.ExtensionContext): void {
         fileUris: fileUris(eng.threads.flatMap((t) => t.messages.flatMap((m) => m.attachments ?? []))),
         workspace: cwd() ?? null,
         soundOnDone: config.settings.soundOnDone,
-        browserTools: config.settings.browserTools !== false,
+        autonomy: config.settings.autonomy,
         telegram: telegram ? telegramView() : { state: 'off' },
         models: Object.fromEntries(config.accounts.map((a) => [a.id, modelInfo(a, modelOptions[a.id] ?? [])])),
       },
@@ -360,10 +396,10 @@ export function activate(context: vscode.ExtensionContext): void {
   function attachmentDir(): string | undefined {
     const folder = cwd();
     if (!folder) {
-      void vscode.window.showWarningMessage('Open a folder first: attachments are stored in the workspace for the agents.');
+      void vscode.window.showWarningMessage('Open a folder first: attachments are kept with the project for the agents.');
       return undefined;
     }
-    const dir = path.join(folder, '.super-agent', 'attachments');
+    const dir = path.join(projectDir(folder), 'attachments');
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
@@ -393,20 +429,57 @@ export function activate(context: vscode.ExtensionContext): void {
     const agy = accounts.cliPath('antigravity');
     if (agy && config.accounts.some((a) => a.kind === 'antigravity')) setTimeout(() => ensureAgyBrowser(agy), 3000);
   }
-  if (config.settings.browserTools !== false) registerAgyBrowser();
+  registerAgyBrowser(); // every agent always has a browser
+
+  /** Signing out (confirmed): the CLI forgets this login; the account stays listed, ready to sign in again. */
+  async function signOutAccount(a: Account): Promise<void> {
+    const how = a.kind === 'antigravity' ? ' Antigravity can only sign out in its own window: one opens, type /logout there.' : '';
+    const ok = await vscode.window.showWarningMessage(`Sign out of ${a.label}?${how}`, { modal: true }, 'Sign out');
+    if (ok !== 'Sign out') return;
+    hot.closeAccount(a.id);
+    try {
+      await accounts.signOut(a.id);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Couldn't sign out: ${(e as Error).message}`);
+    }
+    pushState();
+  }
+
+  /** Removing (confirmed): gone from Super Agent; a login Super Agent created goes with it, your own CLI login stays. */
+  async function removeAccount(a: Account): Promise<void> {
+    const own = a.home === null;
+    const detail = own
+      ? `Super Agent stops using it. ${CLI_META[a.kind].name} itself stays signed in (it's your own login); sign out first if you want that too.`
+      : 'Its sign-in, which Super Agent created, is deleted with it.';
+    const ok = await vscode.window.showWarningMessage(`Remove ${a.label} from Super Agent?`, { modal: true, detail }, 'Remove');
+    if (ok !== 'Remove') return;
+    hot.closeAccount(a.id);
+    accounts.remove(a.id);
+    pushState();
+  }
 
   async function pickModel(id: string): Promise<void> {
     const a = config.accounts.find((x) => x.id === id);
     if (!a) return;
     if (!modelOptions[id]?.length) modelOptions[id] = await listModels(a, accounts.cliPath(a.kind)).catch(() => []);
     const current = modelInfo(a, modelOptions[id]);
-    const items = [
+    const signedOut = pool.get(id).login === 'signed-out';
+    const items: (vscode.QuickPickItem & { id?: string })[] = [
       { label: `$(dashboard) Reasoning effort: ${a.effort ?? 'CLI default'}`, description: 'change', id: '__effort' },
       { label: `${!a.model ? '$(check) ' : ''}CLI default`, description: current.isDefault ? current.name : '', id: '' },
       ...modelOptions[id].map((o) => ({ label: `${a.model === o.id ? '$(check) ' : ''}${o.name}`, description: o.id, detail: o.description, id: o.id })),
+      // The account itself.
+      { label: 'Account', kind: vscode.QuickPickItemKind.Separator },
+      signedOut
+        ? { label: '$(sign-in) Sign in', description: a.label, id: '__signIn' }
+        : { label: '$(sign-out) Sign out', description: a.label, id: '__signOut' },
+      { label: '$(trash) Remove from Super Agent', description: a.label, id: '__remove' },
     ];
     const pick = await vscode.window.showQuickPick(items, { placeHolder: `Model for ${a.label}`, matchOnDescription: true });
-    if (!pick) return;
+    if (!pick || pick.id === undefined) return;
+    if (pick.id === '__signIn') return accounts.signIn(id);
+    if (pick.id === '__signOut') return signOutAccount(a);
+    if (pick.id === '__remove') return removeAccount(a);
     if (pick.id === '__effort') {
       const levels = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
       const e = await vscode.window.showQuickPick(
@@ -426,10 +499,15 @@ export function activate(context: vscode.ExtensionContext): void {
       {
         resolveWebviewView(v) {
           view = v;
-          // Workspace folders too, so attached images can be shown as thumbnails.
+          // Workspace folders and Super Agent's project folders too (attachments are kept there, see projectDir), so
+          // attached images can be shown as thumbnails.
           v.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media'), ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri)],
+            localResourceRoots: [
+              vscode.Uri.joinPath(context.extensionUri, 'media'),
+              vscode.Uri.file(path.join(paths.data, 'work')),
+              ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri),
+            ],
           };
           v.webview.html = html(v.webview, context.extensionUri);
           v.webview.onDidReceiveMessage((m) => handle(m));
@@ -464,12 +542,6 @@ export function activate(context: vscode.ExtensionContext): void {
       if (pick) post({ type: 'selected', threadId: pick.id });
     }),
     vscode.commands.registerCommand('superAgent.addAccount', () => addAccount()),
-    vscode.commands.registerCommand('superAgent.importLogins', () => {
-      const n = accounts.importDefaults();
-      void refreshModels();
-      void vscode.window.showInformationMessage(n ? `Super Agent: imported ${n} login(s).` : 'Super Agent: no new signed-in CLI logins found.');
-      pushState();
-    }),
     vscode.commands.registerCommand('superAgent.stopAll', () => eng.threads.forEach((t) => eng.stop(t.id))),
     vscode.commands.registerCommand('superAgent.connectTelegram', showTelegram),
     vscode.commands.registerCommand('superAgent.telegram', showTelegram),
@@ -528,8 +600,14 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showWarningMessage('Open a folder first: Super Agent agents work in the open workspace folder.');
           return;
         }
-        post({ type: 'selected', threadId: eng.send(m.threadId, m.text, folder, Array.isArray(m.attachments) ? m.attachments : [], m.mode === 'queue' ? 'queue' : 'now').id });
+      {
+        const files = Array.isArray(m.attachments) ? (m.attachments as string[]) : [];
+        const t = eng.send(m.threadId, m.text, folder, files, m.mode === 'queue' ? 'queue' : 'now');
+        post({ type: 'selected', threadId: t.id });
+        // Synced with Telegram while it's on: the chat sees your message, then the agent's progress and reply.
+        void telegram?.onPanelMessage(t, String(m.text ?? ''), files).catch((e) => log.appendLine(`Telegram: ${e.message}`));
         return;
+      }
       case 'attach':
         return void attachFiles();
       case 'voiceStart':
@@ -558,10 +636,11 @@ export function activate(context: vscode.ExtensionContext): void {
         const selection = t.line ? new vscode.Range(t.line - 1, 0, (t.endLine ?? t.line) - 1, 0) : undefined;
         return void vscode.window.showTextDocument(uri, { preview: true, selection });
       }
-      case 'toggleBrowser':
-        config.saveSettings({ browserTools: !config.settings.browserTools });
-        if (config.settings.browserTools) registerAgyBrowser();
+      case 'setAutonomy':
+        if (m.value === 'standard' || m.value === 'auto' || m.value === 'full') config.saveSettings({ autonomy: m.value });
         return pushState();
+      case 'approve':
+        return eng.answerApproval(m.threadId, m.id, m.answer);
       case 'stop':
         return eng.stop(m.threadId);
       case 'setLead':
@@ -578,16 +657,20 @@ export function activate(context: vscode.ExtensionContext): void {
         return accounts.signIn(m.id);
       case 'addAccount':
         return void addAccount(AGENT_KINDS.includes(m.kind) ? m.kind : undefined);
-      case 'importLogins':
-        return void vscode.commands.executeCommand('superAgent.importLogins');
       case 'undoChanges':
       case 'redoChanges': {
         const found = eng.changesAt(m.threadId, m.at);
         if (!found) return;
         const redo = m.type === 'redoChanges';
-        void changes.undo(found.cwd, found.changes, redo).then((err) => {
-          if (err) void vscode.window.showWarningMessage(err);
-          else eng.markUndone(m.threadId, m.at, !redo);
+        void changes.has(found.cwd, found.changes).then(async (kept) => {
+          if (!kept) {
+            eng.markExpired(m.threadId, m.at);
+            void vscode.window.showWarningMessage(`Only the last ${UNDO_TURNS} turns in a workspace can be undone; this one is too old.`);
+          } else {
+            const err = await changes.undo(found.cwd, found.changes, redo);
+            if (err) void vscode.window.showWarningMessage(err);
+            else eng.markUndone(m.threadId, m.at, !redo);
+          }
           pushState(); // also ends the button's busy state
         });
         return;
@@ -595,9 +678,11 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'openDiff': {
         // The file before the turn (left, read-only copy) against how it is now (right).
         const found = eng.changesAt(m.threadId, m.at);
-        if (!found || typeof m.path !== 'string' || !found.changes.files.some((f) => f.path === m.path)) return;
+        if (!found || found.changes.expired || typeof m.path !== 'string' || !found.changes.files.some((f) => f.path === m.path)) return;
         const now = path.join(found.cwd, m.path);
-        void changes.before(found.cwd, found.changes, m.path).then((old) => {
+        void changes.has(found.cwd, found.changes).then(async (kept) => {
+          if (!kept) return void (eng.markExpired(m.threadId, m.at), pushState());
+          const old = await changes.before(found.cwd, found.changes, m.path);
           const left = path.join(paths.data, 'diff', `${found.changes.before.slice(0, 12)}-${found.changes.files.findIndex((f) => f.path === m.path)}-${path.basename(m.path)}`);
           fs.mkdirSync(path.dirname(left), { recursive: true });
           fs.writeFileSync(left, old ?? '');
@@ -611,7 +696,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return void usage.refreshAll(true).finally(() => post({ type: 'usageRefreshed' }));
       case 'openFile':
         // Only files the user attached in this workspace.
-        if (typeof m.path === 'string' && /[\\/]\.super-agent[\\/]attachments[\\/]/.test(m.path) && fs.existsSync(m.path))
+        if (typeof m.path === 'string' && /[\\/]\.super-agent[\\/](work[\\/][^\\/]+[\\/])?attachments[\\/]/.test(m.path) && fs.existsSync(m.path))
           void vscode.commands.executeCommand('vscode.open', vscode.Uri.file(m.path));
         return;
       case 'openLog': {

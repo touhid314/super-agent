@@ -4,7 +4,11 @@ export type AgentKind = 'codex' | 'claude' | 'antigravity';
 export const AGENT_KINDS: AgentKind[] = ['codex', 'claude', 'antigravity'];
 
 export type AccountRole = 'master' | 'worker' | 'off';
-export type Autonomy = 'standard' | 'full';
+/**
+ * What agents may do without you, as in Codex's app: standard = ask (sandboxed; they ask you before stepping outside),
+ * auto = approve for me (same sandbox; an automatic reviewer decides instead of you), full = Auto in the panel: full access (no sandbox).
+ */
+export type Autonomy = 'standard' | 'auto' | 'full';
 
 export interface Account {
   id: string;
@@ -63,8 +67,6 @@ export interface Settings {
   workspace: WorkspaceMode;
   /** Chime + desktop notification when agents finish work. */
   soundOnDone: boolean;
-  /** Give agents a browser (Playwright MCP): open pages, click, fill forms, take screenshots. */
-  browserTools: boolean;
   /** Keep agent CLIs running between messages (no startup lag); false: start a fresh process per turn. */
   hotAgents?: boolean;
   /** Keep the agent CLIs up to date in the background (each with its own updater); on by default. */
@@ -319,7 +321,6 @@ export interface SuperAgentApi {
   toggleTeam(accountId: string): Promise<void>;
   sendMessage(jobId: string, text: string): Promise<void>;
   refreshUsage(): Promise<void>;
-  importDefaults(): Promise<number>;
   installCli(kind: AgentKind): Promise<void>;
   refreshClis(): Promise<void>;
 

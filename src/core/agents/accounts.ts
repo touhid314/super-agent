@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,40 +57,6 @@ export class AccountService {
     return account;
   }
 
-  /** Register the CLIs' default logins (~/.codex, ~/.claude, Antigravity) if they are signed in. */
-  importDefaults(): number {
-    let added = 0;
-    for (const kind of ['codex', 'claude', 'antigravity'] as AgentKind[]) {
-      if (this.config.accounts.some((a) => a.kind === kind && a.home === null)) continue;
-      const probe: Account = { id: 'probe', kind, label: '', home: null, role: 'off', createdAt: 0 };
-      const login = detectLogin(probe);
-      if (login.login !== 'signed-in') continue;
-      this.config.accounts.push({
-        id: newId(),
-        kind,
-        label: labelFor(kind, login.email, 'default'),
-        home: null,
-        role: this.config.master() ? 'worker' : 'master',
-        createdAt: Date.now(),
-      });
-      added++;
-    }
-    // Also pick up sibling Codex homes such as ~/.codex-acct2.
-    for (const name of fs.readdirSync(HOME)) {
-      if (!/^\.codex-.+/.test(name)) continue;
-      const home = path.join(HOME, name);
-      if (!fs.existsSync(path.join(home, 'auth.json'))) continue;
-      if (this.config.accounts.some((a) => a.home && path.resolve(a.home) === path.resolve(home))) continue;
-      const probe: Account = { id: 'probe', kind: 'codex', label: '', home, role: 'off', createdAt: 0 };
-      this.config.accounts.push({ id: newId(), kind: 'codex', label: labelFor('codex', detectLogin(probe).email, name.slice(7)), home, role: 'worker', createdAt: Date.now() });
-      added++;
-    }
-    this.refreshAll();
-    this.ensureMaster();
-    if (added) this.config.saveAccounts();
-    return added;
-  }
-
   update(id: string, patch: Partial<Pick<Account, 'label' | 'role' | 'model' | 'effort'>>): void {
     const acc = this.config.account(id);
     if (!acc) return;
@@ -129,10 +95,12 @@ export class AccountService {
     if (pick) pick.role = 'master';
   }
 
-  /** First run: pick up existing CLI logins and choose a master, so the team works out of the box. */
+  /**
+   * Start-up: check every login and choose a master. Existing CLI logins are never picked up: each account is signed
+   * in to its own folder (see add), so signing in or out elsewhere on the PC can't change it.
+   */
   bootstrap(): void {
     this.refreshAll();
-    if (this.config.accounts.length === 0) this.importDefaults();
     const before = this.config.master()?.id;
     this.ensureMaster();
     if (this.config.master()?.id !== before) this.config.saveAccounts();
@@ -170,6 +138,26 @@ export class AccountService {
       this.refreshStatus(id);
       if (this.pool.get(id).login === 'signed-in' || ++n > 150) clearInterval(timer);
     }, 2000);
+  }
+
+  /**
+   * Signs the account out of its CLI: Codex and Claude Code with their own logout command, in this account's config
+   * home only (other accounts stay signed in). Antigravity has no logout command, only /logout in its own session:
+   * a console opens for that. The account stays listed (signed out), ready to sign in again.
+   */
+  async signOut(id: string): Promise<void> {
+    const acc = this.config.account(id);
+    const cli = acc && this.cliPath(acc.kind);
+    if (!acc || !cli) throw new Error('Account or CLI missing');
+    if (acc.kind === 'antigravity') {
+      this.openConsoleFn(`Sign out: ${acc.label}`, 'Type /logout to sign out of Antigravity, then /exit.', commandLine(cli, []), accountEnv(acc), false);
+    } else {
+      const args = acc.kind === 'codex' ? ['logout'] : ['auth', 'logout'];
+      await new Promise<void>((resolve) => exec(commandLine(cli, args), { env: accountEnv(acc), timeout: 30000, windowsHide: true }, () => resolve()));
+      this.refreshStatus(id);
+    }
+    // Whatever the files still say: you signed it out, so nothing runs on it until you sign in again.
+    this.pool.patch(id, { login: 'signed-out', lastError: 'Signed out' });
   }
 
   installCli(kind: AgentKind): void {

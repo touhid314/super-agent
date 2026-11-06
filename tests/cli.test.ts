@@ -83,3 +83,38 @@ describe('RATE_LIMIT', () => {
     for (const e of ['Request timed out', 'ENOENT: no such file', 'invalid_request_error: prompt is too long']) expect(RATE_LIMIT.test(e), e).toBe(false);
   });
 });
+
+describe('Approve for me (autonomy auto)', () => {
+  it('Claude Code runs in its auto mode: its classifier decides, nothing is pre-allowed', () => {
+    const args = buildArgs({ kind: 'claude', cwd: 'C:/p', lastMessageFile: 'x', mode: 'write', autonomy: 'auto' });
+    expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'auto', '--add-dir']));
+    expect(args).not.toContain('--allowedTools');
+  });
+  it('Antigravity has no reviewer: same as Ask (sandboxed)', () => {
+    const auto = buildArgs({ kind: 'antigravity', cwd: 'C:/p', lastMessageFile: 'x', mode: 'write', autonomy: 'auto' });
+    expect(auto).toEqual(buildArgs({ kind: 'antigravity', cwd: 'C:/p', lastMessageFile: 'x', mode: 'write', autonomy: 'standard' }));
+  });
+});
+
+describe("Super Agent's folder for a project (outside it)", () => {
+  const dirs = ['C:/Users/me/.super-agent/work/app-1a2b3c4d'];
+  it('every agent may write there: Codex as a writable root, Claude Code and Antigravity as an added folder', () => {
+    const codex = buildArgs({ kind: 'codex', cwd: 'C:/p', lastMessageFile: 'x', mode: 'write', autonomy: 'standard', dirs });
+    expect(codex).toContain(`sandbox_workspace_write.writable_roots=['${dirs[0]}']`);
+    const claude = buildArgs({ kind: 'claude', cwd: 'C:/p', lastMessageFile: 'x', mode: 'write', autonomy: 'standard', dirs });
+    expect(claude.slice(claude.indexOf('--add-dir'), claude.indexOf('--permission-mode'))).toContain(dirs[0]);
+    const agy = buildArgs({ kind: 'antigravity', cwd: 'C:/p', lastMessageFile: 'x', mode: 'write', autonomy: 'standard', dirs });
+    expect(agy[agy.indexOf('--add-dir') + 1]).toBe(dirs[0]);
+  });
+});
+
+describe('toolLabel', () => {
+  it('names the browser tools in words, other MCP tools by server, and leaves built-in tools alone', async () => {
+    const { toolLabel } = await import('../src/core/agents/runner');
+    expect(toolLabel('mcp__playwright__browser_run_code_unsafe')).toBe('Browser run script');
+    expect(toolLabel('mcp__playwright__browser_close')).toBe('Browser close');
+    expect(toolLabel('mcp__playwright__browser_navigate')).toBe('Browser open');
+    expect(toolLabel('mcp__github__create_issue')).toBe('github create issue');
+    expect(toolLabel('Bash')).toBe('Bash');
+  });
+});

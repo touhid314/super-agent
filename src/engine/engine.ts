@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Account, AgentKind, Autonomy } from '../core/types';
 import type { AccountPool } from '../core/agents/pool';
-import type { RunRequest, RunResult } from '../core/agents/runner';
+import type { ApprovalAnswer, ApprovalAsk, RunRequest, RunResult } from '../core/agents/runner';
 import type { ConfigStore } from '../core/store/config';
-import { TEAM_FILE, contextBrief, helperPrompt, leadPreamble, transferSession } from './context';
+import { NARRATE, contextBrief, helperPrompt, leadPreamble, transferSession } from './context';
+import { projectDir } from '../core/store/paths';
 import type { RunChanges, Thread, ThreadMsg } from './types';
 import { log } from '../core/log';
 import { ActivityParser } from './activity';
 import { CLI_META } from '../core/agents/cli';
 import { OUTDATED, type UpdateResult } from '../core/agents/updater';
-import type { ChangeTracker } from './changes';
+import { UNDO_TURNS, type ChangeTracker } from './changes';
 
 /** A turn's activity kept for the panel (items / characters per item). */
 const MAX_ACTIVITY = 300;
@@ -32,6 +33,8 @@ export interface EngineDeps {
   onChange(): void;
   onOutput(threadId: string, text: string): void;
   onFinished(t: Thread, outcome: 'done' | 'failed'): void;
+  /** An agent asks you to allow something (shown on the thread; e.g. also notify). */
+  onApproval?(t: Thread): void;
   /** Tracks what each turn changes in the workspace (optional: no tracking without it). */
   changes?: Pick<ChangeTracker, 'snapshot' | 'diff'>;
   /** Updates an agent CLI that the provider says is too old (optional: without it the run just fails). */
@@ -40,7 +43,8 @@ export interface EngineDeps {
   refreshUsage?(id: string): Promise<void>;
 }
 
-const HANDOFF_DIR = '.super-agent/handoff';
+/** A path as agents are shown it (forward slashes work everywhere). */
+const shown = (p: string) => p.replace(/\\/g, '/');
 const COOLDOWN_MIN = 20;
 /** Everyone out of usage: how often to check again when no reset time is known, and the longest single wait. */
 const RECHECK_MS = 20 * 60000;
@@ -71,15 +75,20 @@ const handOverNote = (from: Account, to: Account, lead: boolean) =>
  */
 export class Engine {
   threads: Thread[] = [];
-  private watchers = new Map<string, fs.FSWatcher>();
+  /** Hand-off folders being watched, with the project each belongs to. */
+  private watchers = new Map<string, { w: fs.FSWatcher; cwd: string }>();
   private handled = new Set<string>();
   /** When each account last started or finished work: the one free the longest gets the next task. */
   private lastWork = new Map<string, number>();
+  /** Who could take work at the last check (see teamChanged). */
+  private teamSig?: string;
   private scans = new Map<string, NodeJS.Timeout>();
   /** What the current run of each thread is doing, parsed from its output. */
   private live = new Map<string, ActivityParser>();
   /** Workspace snapshot taken when each top-level thread's current turn started. */
   private snaps = new Map<string, Promise<string | undefined>>();
+  /** Each thread's approval requests waiting for your answer, oldest (the one shown) first. */
+  private asks = new Map<string, { id: string; ask: ApprovalAsk; answer: (a: ApprovalAnswer) => void }[]>();
   private saveTimer: NodeJS.Timeout | null = null;
   /** Wakes waiting work when an agent gets usage back (everyone was out). */
   private wakeTimer: NodeJS.Timeout | null = null;
@@ -96,6 +105,8 @@ export class Engine {
       /* nothing saved yet */
     }
     for (const t of this.threads) {
+      t.approval = undefined; // its agent is gone with the last session
+      t.waitingOn = undefined; // and its background work with it
       // Last used = the last message from you or an agent (older saves also counted status notes).
       const last = t.messages.filter((m) => m.role !== 'system').at(-1)?.at;
       if (last) t.updatedAt = last;
@@ -231,6 +242,7 @@ export class Engine {
 
   stop(threadId: string): void {
     const t = this.get(threadId);
+    if (t) this.cancelAsks(t);
     if (t?.runId) this.d.cancelRun(t.runId);
     if (t && t.status === 'waiting') {
       t.status = 'idle';
@@ -238,6 +250,7 @@ export class Engine {
       t.resumeAt = undefined;
       t.awaitingHelpers = undefined;
       this.sys(t, 'Stopped.');
+      this.pump(); // a lead waiting only on this helper is released
     }
   }
 
@@ -258,6 +271,47 @@ export class Engine {
     }
     for (const id of gone) this.stop(id);
     this.threads = this.threads.filter((t) => !gone.has(t.id));
+    this.pump(); // a lead waiting only on deleted helpers is released
+    this.changed();
+  }
+
+  /** Your answer to the approval request shown on a thread. */
+  answerApproval(threadId: string, id: string, answer: ApprovalAnswer): void {
+    const t = this.get(threadId);
+    const list = this.asks.get(threadId);
+    const i = list?.findIndex((x) => x.id === id) ?? -1;
+    if (!t || !list || i < 0) return;
+    const [x] = list.splice(i, 1);
+    log('engine', `approval ${answer}`, { thread: threadId, ask: x.ask });
+    x.answer(answer);
+    this.showAsk(t);
+  }
+
+  private askUser(t: Thread, ask: ApprovalAsk): Promise<ApprovalAnswer> {
+    return new Promise((answer) => {
+      const list = this.asks.get(t.id) ?? [];
+      this.asks.set(t.id, list);
+      list.push({ id: newId(), ask, answer });
+      if (list.length === 1) this.showAsk(t);
+    });
+  }
+
+  /** Shows the oldest request still waiting (and tells you about it), or clears the card. */
+  private showAsk(t: Thread): void {
+    const next = this.asks.get(t.id)?.[0];
+    t.approval = next ? { ...next.ask, id: next.id, at: Date.now() } : undefined;
+    if (!next) this.asks.delete(t.id);
+    this.changed();
+    if (next) this.d.onApproval?.(t);
+  }
+
+  /** The turn is over (or stopped): requests nobody answered are withdrawn. */
+  private cancelAsks(t: Thread): void {
+    const list = this.asks.get(t.id);
+    if (!list) return;
+    this.asks.delete(t.id);
+    for (const x of list) x.answer('cancel');
+    t.approval = undefined;
     this.changed();
   }
 
@@ -414,6 +468,7 @@ export class Engine {
     // Oldest first: queued hand-offs go out in the order the lead wrote them, to whoever is free (the lead included).
     // (threads are stored newest first; reversed, a stable sort keeps same-millisecond hand-offs in written order)
     for (const t of [...this.threads].reverse().sort((a, b) => a.createdAt - b.createdAt)) {
+      if (t.status === 'waiting' && t.awaitingHelpers && !t.reports?.length && !this.activeHelpers(t).length) this.releaseLead(t);
       if (t.status === 'waiting' && t.pending) {
         const acc = this.pick(t);
         if (acc) {
@@ -445,6 +500,14 @@ export class Engine {
     log('engine', `woke up: "${t.title}" on ${acc.label} (its background work)`, { thread: t.id });
     void this.start(t, acc, '', true);
     return true;
+  }
+
+  /** An agent's background work changed between turns: what it is still waiting for (none: it won't wake by itself). */
+  backgroundTasks(accountId: string, sessionId: string, tasks: string[]): void {
+    const t = this.threads.find((x) => x.session?.id === sessionId && x.session.accountId === accountId);
+    if (!t || t.status === 'working') return; // a running turn shows its own work
+    t.waitingOn = tasks.length ? tasks : undefined;
+    this.changed();
   }
 
   /** `attach`: take over the turn the agent started by itself (see `wake`): no prompt is sent. */
@@ -480,12 +543,19 @@ export class Engine {
     // Every thread, helpers included, can hand off work; its own folder tells us exactly who asked.
     // An agent without teammates gets no team instructions: hand-offs would only come back to itself, one by one.
     const hasTeam = this.d.config.accounts.some((a) => a.id !== acc.id && a.role !== 'off');
-    if (!resume && hasTeam && !attach) input = leadPreamble(`${HANDOFF_DIR}/${t.id}`) + input;
+    // How to hand off: on every new session, and on a resumed one that never got it (it began without teammates).
+    if (hasTeam && !attach && (!resume || !t.teamTold)) {
+      input = this.howToLead(t) + input;
+      t.teamTold = true;
+    } else if (!resume && !attach) t.teamTold = false;
+    if (!attach) t.knownTeam = this.teamIds(acc.id); // who it was told about (see teamChanged)
     if (!attach) input = this.teamNote(t, acc) + input; // every turn: who is free changes all the time
+    if (!attach && acc.kind === 'antigravity') input = NARRATE + input; // otherwise it works without a word
     this.watchHandoffs(t.cwd);
 
     const runId = newId();
     t.status = 'working';
+    t.waitingOn = undefined;
     t.leadId = acc.id;
     t.runId = runId;
     t.runStartedAt = Date.now();
@@ -526,14 +596,17 @@ export class Engine {
           this.queueSave();
         },
         resume,
-        browser: this.d.config.settings.browserTools !== false,
+        browser: true, // a standard tool: every agent can open pages, click, fill forms and take screenshots
         attach,
+        onApproval: (ask) => this.askUser(t, ask),
       });
     } finally {
+      this.cancelAsks(t);
       this.d.pool.release(acc.id);
       this.lastWork.set(acc.id, Date.now()); // free since now: whoever has waited longest gets the next task
     }
     t.runId = undefined;
+    t.waitingOn = res.background?.length ? res.background : undefined;
     parser.flush();
     this.live.delete(t.id);
     if (t.work) t.work.items = [...t.work.items, ...parser.items].slice(-MAX_ACTIVITY);
@@ -637,12 +710,20 @@ export class Engine {
 
   // ---------------------------------------------------------------- helpers (feature 3)
 
+  /** Super Agent's files for a project live outside it (see projectDir): where hand-offs go, and the live team status. */
+  private handoffDir(cwd: string): string {
+    return path.join(projectDir(cwd, this.d.dataDir), 'handoff');
+  }
+
+  private teamFile(cwd: string): string {
+    return path.join(projectDir(cwd, this.d.dataDir), 'team.md');
+  }
+
   private watchHandoffs(cwd: string): void {
-    const dir = path.join(cwd, HANDOFF_DIR);
+    const dir = this.handoffDir(cwd);
     if (this.watchers.has(dir)) return;
     try {
       fs.mkdirSync(dir, { recursive: true });
-      ensureIgnored(cwd);
       // Only new requests count. Recursive: each thread writes into its own sub-folder.
       for (const f of fs.readdirSync(dir, { recursive: true }) as string[]) this.handled.add(path.join(dir, f));
       // Debounced rescan (lets writers finish their files); new requests are taken in the order they were written,
@@ -651,7 +732,7 @@ export class Engine {
         clearTimeout(this.scans.get(dir));
         this.scans.set(dir, setTimeout(() => this.scanHandoffs(cwd, dir), 400));
       });
-      this.watchers.set(dir, w);
+      this.watchers.set(dir, { w, cwd });
     } catch {
       /* folder not writable */
     }
@@ -667,10 +748,32 @@ export class Engine {
     } catch {
       return;
     }
-    for (const { file } of files.sort((a, b) => a.at - b.at || a.file.localeCompare(b.file, undefined, { numeric: true }))) this.onHandoff(cwd, file);
+    const declined = new Map<Thread, { title: string; file: string }[]>();
+    for (const { file } of files.sort((a, b) => a.at - b.at || a.file.localeCompare(b.file, undefined, { numeric: true }))) {
+      const no = this.onHandoff(cwd, file);
+      if (no) declined.set(no.lead, [...(declined.get(no.lead) ?? []), no.item]);
+    }
+    for (const [lead, items] of declined) this.declineHandoffs(lead, items);
   }
 
-  private onHandoff(cwd: string, file: string): void {
+  /** Hand-offs written while nobody else is on the team: the lead hears at once that it must do them itself. */
+  private declineHandoffs(t: Thread, items: { title: string; file: string }[]): void {
+    const lead = this.label(t.leadId);
+    log('engine', `no teammate for ${items.length} hand-off(s) from "${t.title}": back to ${lead}`, { thread: t.id });
+    this.sys(t, `Nobody else is on the team, so ${lead} does ${items.length > 1 ? 'these itself' : 'this itself'}: ${items.map((i) => i.title).join(', ')}.`);
+    const note = `<super-agent-internal>
+Nobody else is on your team right now (the others are turned off or out of usage), so nobody took these hand-offs:
+${items.map((i) => `- ${i.title} (${i.file})`).join('\n')}
+Do them yourself. Don't write more hand-off files unless you are told a teammate joined.
+</super-agent-internal>
+
+Continue the task.`;
+    if (t.status === 'working' && t.runId) this.interject(t, note, 'hand-offs nobody can take');
+    else this.schedule(t, note);
+  }
+
+  /** Starts a helper on the request, or returns it when nobody but the lead itself could ever take it. */
+  private onHandoff(cwd: string, file: string): { lead: Thread; item: { title: string; file: string } } | undefined {
     if (this.handled.has(file) || !fs.existsSync(file)) return;
     this.handled.add(file);
     const request = fs.readFileSync(file, 'utf8').trim();
@@ -681,6 +784,8 @@ export class Engine {
       this.threads.filter((x) => x.cwd === cwd && x.status === 'working' && !x.helperFile).sort((a, b) => (b.runStartedAt ?? 0) - (a.runStartedAt ?? 0))[0];
     const title = request.split(/\r?\n/)[0].replace(/^#+\s*/, '').slice(0, 60) || path.basename(file, '.md');
     const owns = /files?[^\n]*:\s*([^\n]+)/i.exec(request)?.[1] ?? '';
+    // Only teammates other than the lead's own agent can help; with none (all off or out), it would wait forever.
+    if (lead?.leadId && !this.teamIds(lead.leadId).length) return { lead, item: { title, file: shown(file) } };
     const h = this.create(title, cwd, lead?.id);
     h.helperFile = file;
     log('engine', `hand-off: "${title}" from "${lead?.title ?? '?'}"`, { file, helper: h.id, parent: lead?.id });
@@ -700,7 +805,7 @@ export class Engine {
     const parent = h.parentId ? this.get(h.parentId) : undefined;
     log('engine', `helper done: "${h.title}" by ${acc.label}`, { helper: h.id, parent: parent?.id, parentStatus: parent?.status });
     if (!parent) return;
-    (parent.reports ??= []).push({ by: acc.label, title: h.title, text, file: path.relative(parent.cwd, resultFile).replace(/\\/g, '/') });
+    (parent.reports ??= []).push({ by: acc.label, title: h.title, text, file: shown(resultFile) });
     this.deliverReports(parent);
   }
 
@@ -775,8 +880,26 @@ export class Engine {
       if (!changes || !msg) return;
       msg.changes = changes;
       log('engine', `turn changed ${changes.files.length} file(s)`, { thread: t.id });
+      this.expireChanges(t.cwd);
       this.changed();
     });
+  }
+
+  /** Only a workspace's last UNDO_TURNS turns keep their snapshots: older ones can't be undone or diffed any more. */
+  private expireChanges(cwd: string): void {
+    const key = path.resolve(cwd).toLowerCase();
+    const all = this.threads
+      .filter((x) => path.resolve(x.cwd).toLowerCase() === key)
+      .flatMap((x) => x.messages.filter((m) => m.changes && !m.changes.expired))
+      .sort((a, b) => b.at - a.at);
+    for (const m of all.slice(UNDO_TURNS)) m.changes!.expired = true;
+  }
+
+  /** The user tried to undo or diff a turn whose snapshots are gone. */
+  markExpired(threadId: string, at: number): void {
+    const m = this.get(threadId)?.messages.find((x) => x.at === at);
+    if (m?.changes) m.changes.expired = true;
+    this.changed();
   }
 
   /** The message whose turn made these changes (for undo/redo and the diff view). */
@@ -791,6 +914,86 @@ export class Engine {
     const m = this.get(threadId)?.messages.find((x) => x.at === at);
     if (m?.changes) m.changes.undone = undone || undefined;
     this.changed();
+  }
+
+  /**
+   * A lead held its answer for helpers that then ended without reporting back (failed, stopped or deleted):
+   * stop waiting and show the held answer, so the thread never sits on "Waiting for helpers" with nobody left.
+   */
+  private releaseLead(t: Thread): void {
+    t.awaitingHelpers = undefined;
+    t.status = 'idle';
+    const held = t.work?.items.filter((i) => i.startsWith('💬')).at(-1)?.slice(2).trim();
+    log('engine', `no helpers left for "${t.title}": ending the wait`, { thread: t.id });
+    if (held) {
+      this.push(t, { role: 'agent', text: held, accountId: t.leadId, ...this.takeWork(t, held) });
+      this.d.onFinished(t, 'done');
+    } else {
+      this.push(t, { role: 'system', text: 'The helpers stopped without reporting back. Send a message to continue.', ...this.takeWork(t) });
+      this.d.onFinished(t, 'failed');
+    }
+  }
+
+  private howToLead(t: Thread): string {
+    return leadPreamble(shown(path.join(this.handoffDir(t.cwd), t.id)), shown(this.teamFile(t.cwd)));
+  }
+
+  /** Teammates of `leadId` that can take work now (on the team, signed in, with usage left). */
+  private teamIds(leadId: string): string[] {
+    return this.d.config.accounts.filter((a) => a.id !== leadId && a.role !== 'off' && !this.isOut(a)).map((a) => a.id);
+  }
+
+  /**
+   * Who can work changed (an account turned on, signed in, or got usage back). A running agent was only told the team
+   * as its turn started: tell it about each new teammate now, so it can hand work over without waiting for the turn
+   * to end. Cheap when nothing changed (called on every state push).
+   */
+  teamChanged(): void {
+    const sig = this.d.config.accounts.filter((a) => a.role !== 'off' && !this.isOut(a)).map((a) => a.id).sort().join();
+    if (sig === this.teamSig) return;
+    const first = this.teamSig === undefined;
+    this.teamSig = sig;
+    if (first) return;
+    for (const t of this.threads) {
+      if (t.status !== 'working' || !t.runId || !t.leadId) continue;
+      const team = this.teamIds(t.leadId);
+      const added = team.filter((id) => !t.knownTeam?.includes(id));
+      t.knownTeam = team;
+      if (added.length) this.tellTeam(t, added);
+    }
+    this.pump(); // work waiting for a free agent starts on the newcomer
+    this.changed(); // and team.md shows it
+  }
+
+  private tellTeam(t: Thread, added: string[]): void {
+    const lead = this.account(t.leadId);
+    if (!lead) return;
+    const names = added.map((id) => this.label(id)).join(', ');
+    const howTo = t.teamTold ? '' : this.howToLead(t);
+    t.teamTold = true;
+    const note = `${howTo}${this.teamNote(t, lead)}<super-agent-internal>
+${names} just joined your team and can take work now. If any part of this task can run alongside yours, hand it over right away; otherwise carry on.
+</super-agent-internal>`;
+    log('engine', `team grew while "${t.title}" runs: telling ${lead.label}`, { thread: t.id, added });
+    this.sys(t, `${names} joined the team: ${lead.label} can hand work to ${added.length > 1 ? 'them' : 'it'} now.`);
+    this.interject(t, `${note}\n\nContinue the task.`, `new teammate: ${names}`);
+  }
+
+  /** Into the running turn when its CLI takes that; otherwise it stops and resumes at once with the note (as for your messages). */
+  private interject(t: Thread, note: string, label: string): void {
+    const runId = t.runId!;
+    void (this.d.steer?.(runId, note, label) ?? Promise.resolve(false)).then((steered) => {
+      if (steered) return;
+      if (t.runId !== runId) {
+        // The turn just ended: the note is next in line.
+        if (t.status === 'idle') this.schedule(t, note);
+        else t.queue.unshift(note);
+        return;
+      }
+      t.queue.unshift(note);
+      t.restarting = true;
+      this.d.cancelRun(runId);
+    });
   }
 
   /** Helper threads (with their own helpers) still running or queued for t. */
@@ -811,11 +1014,20 @@ Leading comes first: check this result, and if any work is left, give each free 
   private teamNote(t: Thread, acc: Account): string {
     // Even when everyone is busy right now: queued pieces are picked up as soon as anyone frees up.
     const team = this.d.config.accounts.filter((a) => a.id !== acc.id && a.role !== 'off' && !this.isOut(a));
-    if (!team.length) return '';
+    if (!team.length) {
+      // This session may remember teammates from earlier turns: say they are gone, or it keeps handing work off.
+      return t.teamTold === false
+        ? ''
+        : `<super-agent-internal>
+You have no teammates right now (the others are turned off or out of usage): do all the work yourself and don't write hand-off files. You'll be told if one joins.
+</super-agent-internal>
+
+`;
+    }
     const free = this.free().filter((a) => a.id !== acc.id);
     const busy = team.filter((a) => !free.includes(a));
     return `<super-agent-internal>
-Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.length ? `; busy: ${busy.map((a) => a.label).join(', ')}` : ''}. Hand-offs: \`${HANDOFF_DIR}/${t.id}/\` · live status: \`${TEAM_FILE}\`.
+Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.length ? `; busy: ${busy.map((a) => a.label).join(', ')}` : ''}. Hand-offs: \`${shown(path.join(this.handoffDir(t.cwd), t.id))}/\` · live status: \`${shown(this.teamFile(t.cwd))}\`.
 </super-agent-internal>
 
 `;
@@ -865,11 +1077,10 @@ Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.l
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.save();
-      // Every workspace agents work in gets the live team status they can read at any time.
-      for (const dir of this.watchers.keys()) {
-        const cwd = path.dirname(path.dirname(dir));
+      // Every project agents work in gets the live team status they can read at any time.
+      for (const { cwd } of this.watchers.values()) {
         try {
-          fs.writeFileSync(path.join(cwd, TEAM_FILE), this.teamStatus(cwd));
+          fs.writeFileSync(this.teamFile(cwd), this.teamStatus(cwd));
         } catch {
           /* folder not writable */
         }
@@ -879,7 +1090,6 @@ Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.l
 
   /** The live status agents read: who is free or busy, and every hand-off in this folder with its state. */
   teamStatus(cwd: string): string {
-    const rel = (f: string) => path.relative(cwd, f).replace(/\\/g, '/');
     const lines = [`# Super Agent team (live, updated ${new Date().toLocaleTimeString()})`, '', '## Agents'];
     for (const a of this.d.config.accounts.filter((x) => x.role !== 'off')) {
       const work = this.threads.find((t) => t.status === 'working' && t.leadId === a.id);
@@ -896,7 +1106,7 @@ Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.l
           : done ? `done: ${this.label(h.leadId)}`
           : 'stopped';
         const from = h.parentId ? this.get(h.parentId)?.title : undefined;
-        lines.push(`- [${state}] ${h.title}${from ? ` (for "${from}")` : ''}: ${rel(h.helperFile!)}${done ? ` → ${rel(h.helperFile!.replace(/\.md$/, '.result.md'))}` : ''}`);
+        lines.push(`- [${state}] ${h.title}${from ? ` (for "${from}")` : ''}: ${shown(h.helperFile!)}${done ? ` → ${shown(h.helperFile!.replace(/\.md$/, '.result.md'))}` : ''}`);
       }
     }
     return lines.join('\n') + '\n';
@@ -904,19 +1114,8 @@ Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.l
 
   dispose(): void {
     if (this.saveTimer) this.save(); // VS Code is closing or reloading: keep the last changes
-    for (const w of this.watchers.values()) w.close();
+    for (const { w } of this.watchers.values()) w.close();
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
   }
 }
 
-/** Keep hand-off notes out of git (local exclude, never committed). */
-function ensureIgnored(cwd: string): void {
-  try {
-    const exclude = path.join(cwd, '.git', 'info', 'exclude');
-    if (!fs.existsSync(path.dirname(exclude))) return;
-    const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
-    if (!cur.includes('.super-agent/')) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}.super-agent/\n`);
-  } catch {
-    /* not a git repo */
-  }
-}

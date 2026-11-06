@@ -18,7 +18,7 @@ describe('an agent that carries on by itself after replying', () => {
     const account: Account = { id: 'c', kind: 'claude', label: 'Claude · test', home: null, role: 'master', createdAt: 0 };
     const hot = new HotAgents(dir);
     const engine = new Engine({
-      config: { accounts: [account], settings: { taskTimeoutMin: 5, browserTools: false } } as never,
+      config: { accounts: [account], settings: { taskTimeoutMin: 5 } } as never,
       pool: new AccountPool(),
       dataDir: dir,
       cliPath: () => cli,
@@ -32,14 +32,19 @@ describe('an agent that carries on by itself after replying', () => {
       onFinished: () => undefined,
     });
     hot.onWake = (w) => void engine.wake(w.account.id, w.sessionId);
+    hot.onBackground = (b) => engine.backgroundTasks(b.account.id, b.sessionId, b.tasks);
     try {
       const t = engine.send(undefined, 'run the smoke test', cwd);
       const agent = () => t.messages.filter((m) => m.role === 'agent');
+      // Between its reply and its wake-up, the thread says what it is waiting for.
+      for (let i = 0; i < 300 && agent().length < 1; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(t.waitingOn).toEqual(['Watch run.log']);
       for (let i = 0; i < 300 && agent().length < 2; i++) await new Promise((r) => setTimeout(r, 50));
       expect(agent().map((m) => m.text)).toEqual(['Started (run the smoke test). I\'ll report as events arrive.', 'Done: all 5 courses downloaded.']);
       // What it did on its own is the second turn's work, not lost.
       expect(agent()[1].activity?.join('\n')).toContain('The run finished: all 5 courses downloaded.');
       expect(t.status).toBe('idle');
+      expect(t.waitingOn).toBeUndefined(); // its background work is over
 
       // And it keeps working normally afterwards: the next message resumes the same session.
       engine.send(t.id, 'thanks', cwd);

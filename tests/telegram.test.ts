@@ -14,6 +14,8 @@ const acc = (id: string): Account => ({ id, kind: 'claude', label: id, home: nul
 function fakeTelegram() {
   const inbox: { update_id: number; message: unknown }[] = [];
   const sent: { chat: number; text: string }[] = [];
+  /** Texts sent without a notification. */
+  const quiet: string[] = [];
   let id = 1;
   const fetch = (async (url: string, init?: RequestInit) => {
     const method = String(url).split('/').pop()!;
@@ -25,15 +27,16 @@ function fakeTelegram() {
     }
     if (method === 'sendMessage') {
       sent.push({ chat: body.chat_id, text: body.text });
+      if (body.disable_notification) quiet.push(body.text);
       return ok({ message_id: sent.length });
     }
     return ok(true);
   }) as typeof globalThis.fetch;
   const say = (chat: number, text: string) => inbox.push({ update_id: id++, message: { chat: { id: chat }, text } });
-  return { fetch, sent, say };
+  return { fetch, sent, quiet, say };
 }
 
-function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-'))) {
+function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Promise<void>) {
   const cwd = path.join(dir, 'proj');
   fs.mkdirSync(cwd, { recursive: true });
   const runs: RunRequest[] = [];
@@ -45,6 +48,8 @@ function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-'))) {
     cliPath: () => 'fake',
     runAgent: async (req) => {
       runs.push(req);
+      req.onText('→ Read app.ts\n');
+      await hold; // (a run that's still working while the test looks)
       return { code: 0, finalText: `reply to: ${req.prompt.split('\n').pop()}`, sessionId: 's', rateLimited: false, cancelled: false, timedOut: false };
     },
     cancelRun: () => undefined,
@@ -97,7 +102,8 @@ describe('Telegram relay', () => {
     await h.until(() => h.tg.sent.some((s) => s.text.includes('reply to:')));
     expect(h.runs).toHaveLength(1);
     expect(h.runs[0].prompt).toContain('fix the login bug');
-    expect(h.tg.sent.at(-1)).toEqual({ chat: 7, text: '<b>Opus 9</b>\n\nreply to: fix the login bug' });
+    // Who answered and how long it took, in the reply itself (no separate "finished" message).
+    expect(h.tg.sent.at(-1)!.text).toMatch(/^<b>🤖 Opus 9<\/b> in \d+s\n\nreply to: fix the login bug$/);
 
     // The next message continues the same thread (and its CLI session).
     h.tg.say(7, 'now add a test');
@@ -108,6 +114,51 @@ describe('Telegram relay', () => {
     h.tg.say(7, '/new');
     h.tg.say(7, 'something else');
     await h.until(() => h.engine.threads.length === 2);
+    h.relay.stop();
+  });
+
+  it('synced with the panel: your VS Code message shows silently, the reply notifies, and Telegram continues that thread', async () => {
+    const h = setup();
+    h.relay.start('123:token');
+    h.tg.say(7, `/start ${h.relay.pairCode}`);
+    await h.until(() => h.relay.state === 'on');
+    const t = h.engine.send(undefined, 'rename the config', path.join(h.dir, 'proj'));
+    await h.relay.onPanelMessage(t, 'rename the config', ['C:/x/shot.png']);
+    await h.until(() => h.tg.sent.some((s) => s.text.includes('reply to:')));
+    const mine = h.tg.sent.find((s) => s.text.includes('rename the config') && !s.text.includes('reply to:'))!;
+    expect(mine.text).toContain('<b>👤 You</b><i> · VS Code · rename the config</i>');
+    expect(mine.text).toContain('📎 shot.png');
+    expect(h.tg.quiet).toContain(mine.text); // you just wrote it: no notification
+    const reply = h.tg.sent.find((s) => s.text.includes('reply to:'))!;
+    expect(h.tg.quiet).not.toContain(reply.text); // the agent's reply notifies
+    // Writing in Telegram now continues the same thread.
+    h.tg.say(7, 'and the docs');
+    await h.until(() => h.runs.length === 2 && t.status === 'idle');
+    expect(h.engine.threads.filter((x) => !x.parentId)).toHaveLength(1);
+    h.relay.stop();
+  });
+
+  it('/sync brings the thread running in VS Code into the chat: your prompt, then its live progress so far, then the reply', async () => {
+    let release!: () => void;
+    const h = setup(undefined, new Promise<void>((r) => (release = r)));
+    h.relay.start('123:token');
+    h.tg.say(7, `/start ${h.relay.pairCode}`);
+    await h.until(() => h.relay.state === 'on');
+    // Started in VS Code, so Telegram doesn't follow it yet.
+    const t = h.engine.send(undefined, 'migrate the database', path.join(h.dir, 'proj'));
+    await h.until(() => h.engine.liveActivity(t.id).length > 0);
+    const before = h.tg.sent.length;
+    h.tg.say(7, '/sync');
+    await h.until(() => h.tg.sent.some((s) => s.text.includes('is working')));
+    const synced = h.tg.sent.slice(before);
+    expect(synced[0].text).toContain('<b>👤 You</b><i> · migrate the database</i>');
+    expect(synced[0].text).toContain('migrate the database');
+    expect(synced[1].text).toContain('🤖 <b>Opus 9</b> is working');
+    expect(synced[1].text).toContain('Read app.ts'); // the steps so far
+    release();
+    await h.until(() => h.tg.sent.some((s) => s.text.includes('reply to:')));
+    // From now on it's synced: the reply came here too.
+    expect(h.tg.sent.at(-1)!.text).toMatch(/🤖 Opus 9<\/b> in \d+s\n\nreply to: migrate the database/);
     h.relay.stop();
   });
 

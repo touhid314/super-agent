@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Account, Autonomy } from '../types';
 import { accountEnv, buildArgs, commandLine, writeBrowserConfig, type RunMode } from './cli';
+import { projectDir } from '../store/paths';
+import { killTreesNow } from './orphans';
 
 export interface RunRequest {
   runId: string;
@@ -18,14 +20,36 @@ export interface RunRequest {
   onText: (text: string) => void;
   /** Continue an earlier CLI session instead of starting fresh (keeps the agent's full context). */
   resume?: string;
-  /** Give the agent a browser; its screenshots go to <cwd>/.super-agent/screenshots. */
+  /** Give the agent a browser; its screenshots go to the project's folder in Super Agent's data (see projectDir). */
   browser?: boolean;
   /**
    * Don't send a prompt: take over the turn the agent (session `resume`) started by itself, e.g. when one of its
    * background tasks woke it up after its last reply (hot agents only).
    */
   attach?: boolean;
+  /**
+   * The agent asks for something its sandbox doesn't allow (a command or edit outside the folder, network access):
+   * answer it. Without this, nothing is asked and the sandbox simply blocks (hot Codex only, Standard autonomy).
+   */
+  onApproval?: (ask: ApprovalAsk) => Promise<ApprovalAnswer>;
 }
+
+/** What an agent asks permission for. */
+export interface ApprovalAsk {
+  /** tool: any other tool the agent may not use without asking (`tool` names it). */
+  kind: 'command' | 'files' | 'permissions' | 'tool';
+  tool?: string;
+  command?: string;
+  cwd?: string;
+  /** Files it wants to change (edits), or folders it wants to write to (permissions). */
+  paths?: string[];
+  /** Permissions: it also wants network access. */
+  network?: boolean;
+  reason?: string;
+}
+
+/** accept: this time · acceptForSession: this and similar requests for the rest of the session. */
+export type ApprovalAnswer = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
 export interface RunResult {
   code: number | null;
@@ -41,6 +65,8 @@ export interface RunResult {
   error?: string;
   cancelled: boolean;
   timedOut: boolean;
+  /** Background work the agent left running when its turn ended (it carries on by itself when that ends). */
+  background?: string[];
 }
 
 /** The account can't be used right now (logged out, expired, or no longer eligible for this CLI). */
@@ -61,8 +87,14 @@ export function cancelRun(runId: string): void {
   killTree(a.child.pid);
 }
 
+/** VS Code is closing: every run stops now (waited for, so none keeps working after the window is gone). */
 export function cancelAll(): void {
-  for (const id of active.keys()) cancelRun(id);
+  const pids: number[] = [];
+  for (const a of active.values()) {
+    a.cancelled = true;
+    if (a.child.pid && a.child.exitCode === null) pids.push(a.child.pid);
+  }
+  killTreesNow(pids);
 }
 
 export function killTree(pid: number): void {
@@ -75,10 +107,11 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
   const log = fs.createWriteStream(req.logFile, { flags: 'a' });
   const lastMessageFile = req.logFile.replace(/\.log$/, '.final.txt');
   const newSessionId = randomUUID();
-  const browser = req.browser ? { outputDir: path.join(req.cwd, '.super-agent', 'screenshots'), configFile: req.logFile.replace(/\.log$/, '.mcp.json') } : undefined;
+  const browser = req.browser ? { outputDir: path.join(projectDir(req.cwd), 'screenshots'), configFile: req.logFile.replace(/\.log$/, '.mcp.json') } : undefined;
   if (browser && req.account.kind === 'claude') writeBrowserConfig(browser.configFile, browser.outputDir);
   const args = buildArgs({
     browser,
+    dirs: [projectDir(req.cwd)],
     kind: req.account.kind,
     mode: req.mode,
     autonomy: req.autonomy,
@@ -247,7 +280,7 @@ export function renderClaudeEvent(line: string): { text: string; final?: string 
   if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
     const parts = ev.message.content.map((c: any) => {
       if (c.type === 'text') return c.text + '\n';
-      if (c.type === 'tool_use') return `→ ${c.name} ${describeTool(c.input)}\n`;
+      if (c.type === 'tool_use') return `→ ${toolLabel(c.name)} ${describeTool(c.input)}\n`;
       return '';
     });
     return { text: parts.join('') };
@@ -276,6 +309,38 @@ function agyDetail(s: any): string {
 }
 
 /** The file, command or query a Claude Code tool call acts on: whole (the panel shows long ones on click). */
+/** The browser's tools (Playwright MCP), in words; the rest just drop their "browser_" prefix. */
+const BROWSER_ACTIONS: Record<string, string> = {
+  run_code_unsafe: 'run script',
+  run_code: 'run script',
+  evaluate: 'run script',
+  navigate: 'open',
+  navigate_back: 'go back',
+  snapshot: 'read page',
+  take_screenshot: 'screenshot',
+  console_messages: 'console',
+  network_requests: 'network',
+  file_upload: 'upload file',
+  fill_form: 'fill form',
+  press_key: 'press key',
+  wait_for: 'wait',
+};
+
+/**
+ * A tool's name as people read it: MCP tools are "mcp__<server>__<tool>", so the browser's
+ * mcp__playwright__browser_run_code_unsafe becomes "Browser run script"; other servers read "<server> <tool>".
+ */
+export function toolLabel(name: string): string {
+  const [prefix, server, ...rest] = String(name).split('__');
+  if (prefix !== 'mcp' || !server || !rest.length) return name;
+  const tool = rest.join('__');
+  if (server === 'playwright') {
+    const action = tool.replace(/^browser_/, '');
+    return `Browser ${BROWSER_ACTIONS[action] ?? action.replace(/_/g, ' ')}`;
+  }
+  return `${server} ${tool.replace(/_/g, ' ')}`;
+}
+
 export function describeTool(input: any): string {
   if (!input || typeof input !== 'object') return '';
   return oneLine(input.file_path ?? input.path ?? input.command ?? input.pattern ?? input.url ?? '');

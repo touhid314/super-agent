@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 
 /** Root for all Super-Agent data. Kept short because Windows worktrees hit MAX_PATH quickly. */
 export const DATA_DIR = process.env.SUPER_AGENT_HOME || path.join(os.homedir(), '.super-agent');
@@ -17,6 +18,17 @@ export const paths = {
   worktree: (jobId: string, taskId: string) => path.join(DATA_DIR, 'wt', `${jobId.slice(0, 6)}-${taskId}`),
   jobsRoot: path.join(DATA_DIR, 'jobs'),
 };
+
+/**
+ * Super Agent's own files for one project folder (hand-offs, live team status, attachments, screenshots): kept here,
+ * outside the project, so it stays clean. Every agent is given write access to it (it isn't in their workspace).
+ */
+export function projectDir(cwd: string, root = DATA_DIR): string {
+  const full = path.resolve(cwd);
+  const key = process.platform === 'win32' ? full.toLowerCase() : full;
+  const name = (path.basename(full) || 'root').replace(/[^\w.-]+/g, '_').slice(0, 40);
+  return path.join(root, 'work', `${name}-${createHash('sha1').update(key).digest('hex').slice(0, 8)}`);
+}
 
 export function ensureDir(p: string): string {
   fs.mkdirSync(p, { recursive: true });

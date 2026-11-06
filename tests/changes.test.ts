@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ChangeTracker } from '../src/engine/changes';
+import { ChangeTracker, UNDO_TURNS } from '../src/engine/changes';
 
 function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-changes-'));
@@ -62,6 +62,33 @@ describe('ChangeTracker', () => {
     expect(await tracker.undo(ws, c)).toMatch(/changed since/);
     expect([read(path.join(ws, 'a.txt')), read(path.join(ws, 'n.txt'))]).toEqual(['edited later\n', 'new\n']);
   }, 30000);
+
+  it('keeps only the last UNDO_TURNS turns, and deletes older snapshots', async () => {
+    const { ws, tracker } = setup();
+    const turns = [];
+    for (let i = 0; i < UNDO_TURNS + 2; i++) {
+      const before = (await tracker.snapshot(ws))!;
+      fs.writeFileSync(path.join(ws, 'a.txt'), `turn ${i}\n`);
+      turns.push((await tracker.diff(ws, before))!);
+    }
+    const kept = await Promise.all(turns.map((c) => tracker.has(ws, c)));
+    expect(kept).toEqual([false, false, ...Array(UNDO_TURNS).fill(true)]);
+    expect(await tracker.undo(ws, turns.at(-1)!)).toBeUndefined();
+    expect(read(path.join(ws, 'a.txt'))).toBe(`turn ${UNDO_TURNS}\n`);
+  }, 60000);
+
+  it("keeps a running turn's starting snapshot while other turns end", async () => {
+    const { ws, tracker } = setup();
+    const long = (await tracker.snapshot(ws))!;
+    for (let i = 0; i < UNDO_TURNS + 1; i++) {
+      const before = (await tracker.snapshot(ws))!;
+      fs.writeFileSync(path.join(ws, 'a.txt'), `other ${i}\n`);
+      await tracker.diff(ws, before);
+    }
+    fs.writeFileSync(path.join(ws, 'n.txt'), 'new\n');
+    const c = (await tracker.diff(ws, long))!;
+    expect(String(await tracker.before(ws, c, 'a.txt'))).toBe('a\nb\nc\n');
+  }, 60000);
 
   it('shows a file as it was before the turn', async () => {
     const { ws, tracker } = setup();

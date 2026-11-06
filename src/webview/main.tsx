@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 
 import { createRoot } from 'react-dom/client';
 import type { Account, AccountStatus, AccountUsage } from '../core/types';
 import { AgentLogo, TelegramLogo } from './components/Logos';
-import { Markdown } from './components/Markdown';
+import { CopyButton, Markdown } from './components/Markdown';
 import type { RunChanges, Thread } from '../engine/types';
 import { TelegramCard, type TelegramView } from './telegram';
 
@@ -18,7 +18,7 @@ interface State {
   threads: Thread[];
   workspace: string | null;
   soundOnDone: boolean;
-  browserTools: boolean;
+  autonomy?: 'standard' | 'auto' | 'full';
   fileUris: Record<string, string>;
   telegram: TelegramView;
   models: Record<string, { id: string; name: string; isDefault: boolean }>;
@@ -93,9 +93,24 @@ function App() {
     const h = setInterval(() => tick((x) => x + 1), 1000);
     return () => clearInterval(h);
   }, [anyRunning]);
-  const [showUsage, setShowUsage] = useState(false);
+  /** The one overlay open above the prompt box (opening another closes it; a click anywhere else closes it). */
+  const [overlay, setOverlay] = useState<'usage' | 'telegram' | 'access' | null>(null);
+  const toggleOverlay = (o: 'usage' | 'telegram' | 'access') => setOverlay((v) => (v === o ? null : o));
+  const showUsage = overlay === 'usage';
+  const showTelegram = overlay === 'telegram';
+  useEffect(() => {
+    if (!overlay) return;
+    // Clicks inside the overlay, or on the buttons that open one (they toggle it themselves), don't close it.
+    const away = (e: MouseEvent) => !(e.target as Element).closest?.('.overlay, [data-overlay]') && setOverlay(null);
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOverlay(null);
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [overlay]);
   const [refreshing, setRefreshing] = useState(false);
-  const [showTelegram, setShowTelegram] = useState(false);
   /** The mic: idle, setting up (first use), recording (with loudness), or turning speech into text. */
   const [voice, setVoice] = useState<{ state: 'idle' | 'installing' | 'recording' | 'transcribing'; level?: number; startedAt?: number }>({ state: 'idle' });
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -119,7 +134,7 @@ function App() {
       }
       else if (m.type === 'selected') setSelected(m.threadId);
       else if (m.type === 'newThread') setSelected(null);
-      else if (m.type === 'showTelegram') setShowTelegram(true);
+      else if (m.type === 'showTelegram') setOverlay('telegram');
       else if (m.type === 'attached') {
         setAttachments((a) => [...a, ...m.files.filter((f: string) => !a.includes(f))]);
         setPending((u) => ({ ...u, ...m.uris }));
@@ -174,21 +189,8 @@ function App() {
   const helpers = thread ? state.threads.filter((t) => t.parentId === thread.id) : [];
   /** Anything still running in this thread or the helpers under it. */
   const inFlight = (t: Thread): boolean => t.status !== 'idle' || state.threads.some((x) => x.parentId === t.id && inFlight(x));
-  // Helpers belong to the user turn they were started in. A finished turn's helpers are drawn right after the answer
-  // that wrapped them up; the live graph at the bottom shows only the current turn's work (and anything still running).
-  const msgs = thread?.messages ?? [];
-  const turnOf = (at: number) => msgs.reduce((n, m, i) => (m.role === 'user' && m.at <= at ? i : n), -1);
-  const placed = new Map<number, Thread[]>(); // message index → finished helpers shown after it
-  const turns = new Map<number, Thread[]>();
-  for (const h of helpers) turns.set(turnOf(h.createdAt), [...(turns.get(turnOf(h.createdAt)) ?? []), h]);
-  for (const group of turns.values()) {
-    if (group.some(inFlight)) continue;
-    const doneAt = Math.max(...group.map((h) => h.updatedAt));
-    const at = msgs.findIndex((m) => m.role === 'agent' && m.at >= doneAt);
-    if (at >= 0) placed.set(at, [...(placed.get(at) ?? []), ...group]);
-  }
-  const isPlaced = (h: Thread) => [...placed.values()].some((g) => g.includes(h));
-  const liveKids = helpers.filter((h) => !isPlaced(h));
+  // Only helpers still at work are shown: once one is done, its lead has its report and it's gone from view.
+  const liveKids = helpers.filter(inFlight);
   // This turn's activity: the live list for this turn if we have it, else what the engine saved so far.
   const live = thread ? steps[thread.id] : undefined;
   const liveItems = thread?.work ? (live && live.startedAt === thread.work.startedAt ? live.items : thread.work.items) : [];
@@ -200,11 +202,15 @@ function App() {
   const parents: Thread[] = [];
   for (let p = state.threads.find((x) => x.id === thread?.parentId); p && !parents.includes(p); p = state.threads.find((x) => x.id === p!.parentId)) parents.unshift(p);
 
+  const isUnder = (x: Thread, rootId: string): boolean => {
+    for (let p = state.threads.find((y) => y.id === x.parentId); p; p = state.threads.find((y) => y.id === p!.parentId)) if (p.id === rootId) return true;
+    return false;
+  };
+
   /** One agent in the work graph: what it is doing now, then the helpers it brought in, nested the same way. */
-  const graphNode = (t: Thread, depth: number, only?: Thread[]): ReactNode => {
-    const kids = (only ?? state.threads.filter((x) => x.parentId === t.id)).slice().reverse(); // oldest first
+  const graphNode = (t: Thread, depth: number): ReactNode => {
+    const kids = state.threads.filter((x) => x.parentId === t.id && inFlight(x)).slice().reverse(); // oldest first, still working
     const a = acc(t.leadId);
-    const recent = (steps[t.id]?.items ?? []).slice(-4);
     return (
       <div key={t.id} className="g-node">
         <div className={`g-head ${depth ? 'link' : ''}`} onClick={depth ? () => setSelected(t.id) : undefined} title={depth ? 'Open this helper thread' : undefined}>
@@ -221,9 +227,10 @@ function App() {
             <span className="g-state done">✓ done</span>
           )}
         </div>
+        {/* A helper is an agent too: its whole work, scrollable, like its lead's (only shorter). */}
         {t.status === 'working' && depth > 0 && (
           <div className="g-steps">
-            {recent.length ? recent.map((s, i) => <Step key={i} text={s} live={i === recent.length - 1} />) : <div className="g-step now"><i>Thinking…</i></div>}
+            <Timeline items={steps[t.id]?.items ?? []} live sub />
           </div>
         )}
         {kids.length > 0 && <div className="g-kids">{kids.map((k) => graphNode(k, depth + 1))}</div>}
@@ -322,7 +329,7 @@ function App() {
                 </button>
               ))}
             </div>
-            <button className="hero-tg" onClick={() => setShowTelegram(true)}>
+            <button className="hero-tg" data-overlay onClick={() => setOverlay("telegram")}>
               <TelegramLogo size={36} />
               <span className="hero-tg-text">
                 <b>Your workstation, from your phone</b>
@@ -335,14 +342,8 @@ function App() {
           </div>
         )}
         {thread?.messages.map((m, i) => [
-          // A finished turn's work graph sits just above the answer that wrapped it up (it happened first).
           // Codex-style: what led to this answer, collapsed into "Worked for …" above it.
           m.workedMs !== undefined && <WorkedFor key="worked" ms={m.workedMs} items={m.activity ?? []} />,
-          placed.has(i) && (
-            <div key="graph" className="graph">
-              {graphNode(thread, 0, placed.get(i))}
-            </div>
-          ),
           m.role === 'user' ? (
             <div key={i} className="mine">
               {m.attachments?.some(isImage) && (
@@ -368,7 +369,10 @@ function App() {
                   )}
                 </div>
               )}
-              <div className="stamp">{when(m.at)}</div>
+              <div className="stamp">
+                {m.text && <CopyButton text={m.text} />}
+                {when(m.at)}
+              </div>
             </div>
           ) : m.role === 'system' ? (
             <div key={i} className="msg sys">
@@ -381,7 +385,10 @@ function App() {
                 <span>{modelName(m.accountId)}</span>
               </div>
               <Markdown text={m.text} onLink={openLink} />
-              <div className="stamp">{when(m.at)}</div>
+              <div className="stamp">
+                {when(m.at)}
+                <CopyButton text={m.text} />
+              </div>
             </div>
           ),
           m.changes && <Changes key="changes" threadId={thread.id} at={m.at} c={m.changes} />,
@@ -397,6 +404,11 @@ function App() {
             {(workItems.length > 0 || !speaking) && <Timeline items={workItems} live={thread.status === 'working' && !speaking} />}
           </div>
         )}
+        {/* Requests to allow something, from this thread's agent or any helper under it. */}
+        {thread &&
+          [thread, ...state.threads.filter((x) => x.approval && x.id !== thread.id && parents.every((p) => p.id !== x.id) && isUnder(x, thread.id))]
+            .filter((x) => x.approval)
+            .map((x) => <Approval key={x.approval!.id} t={x} who={modelName(x.leadId)} />)}
         {thread && liveKids.length > 0 && <div className="graph">{liveKids.slice().reverse().map((k) => graphNode(k, 1))}</div>}
         {thread && speaking && (
           <div className="msg agent">
@@ -407,12 +419,22 @@ function App() {
             <Markdown text={speaking} onLink={openLink} />
           </div>
         )}
+        {/* The agent replied but left work running in the background: it picks up by itself when that ends. */}
+        {thread && thread.status === 'idle' && thread.waitingOn && thread.waitingOn.length > 0 && (
+          <div className="bg-wait" title={thread.waitingOn.join('\n')}>
+            <span className="bg-wait-dot" />
+            <span>
+              {modelName(thread.leadId)} is waiting for {thread.waitingOn.length === 1 ? 'a background task' : `${thread.waitingOn.length} background tasks`}
+              <span className="muted"> ({thread.waitingOn.join(', ')})</span>. It continues by itself when {thread.waitingOn.length === 1 ? 'it ends' : 'they end'}.
+            </span>
+          </div>
+        )}
       </section>
 
       <section className="composer">
-        {showTelegram && <TelegramCard t={state.telegram ?? { state: 'off' }} send={send} onClose={() => setShowTelegram(false)} />}
+        {showTelegram && <TelegramCard t={state.telegram ?? { state: 'off' }} send={send} />}
         {showUsage && (
-          <div className="usage-panel">
+          <div className="overlay usage-panel">
             <div className="usage-head">
               <b>Usage</b>
               <span className="spacer" />
@@ -426,9 +448,6 @@ function App() {
                 }}
               >
                 ↻
-              </button>
-              <button className="x" title="Close" onClick={() => setShowUsage(false)}>
-                ×
               </button>
             </div>
             <div className="usage-grid">
@@ -512,7 +531,7 @@ function App() {
             </button>
             {team.length > 0 && (
               <span className="team-count" title={team.map((a) => `${modelName(a.id)} (${a.label.replace(/^[^·]+·\s*/, '')})${(state.status[a.id]?.busyRuns ?? 0) > 0 ? ' · working' : ''}`).join('\n')}>
-                {team.length} agent{team.length === 1 ? '' : 's'} in the team
+                {team.length} agent team
                 {(() => {
                   const busy = team.filter((a) => (state.status[a.id]?.busyRuns ?? 0) > 0).length;
                   return busy > 0 ? ` · ${busy} working` : '';
@@ -520,31 +539,29 @@ function App() {
               </span>
             )}
             <span className="spacer" />
-            <a className={`opt ${showUsage ? 'on' : ''}`} onClick={() => setShowUsage((v) => !v)}>
+            <Access value={state.autonomy ?? 'standard'} open={overlay === 'access'} onToggle={() => toggleOverlay('access')} onPicked={() => setOverlay(null)} />
+            <a className={`opt ${showUsage ? 'on' : ''}`} data-overlay onClick={() => toggleOverlay('usage')}>
               Usage
             </a>
             <a
-              className={`opt ${state.browserTools ? 'on' : ''}`}
-              title={state.browserTools ? 'Agents have a browser: they can open pages, click, fill forms and take screenshots. Click to turn off.' : 'Browser tools are off. Click to give agents a browser.'}
-              onClick={() => send({ type: 'toggleBrowser' })}
-            >
-              {state.browserTools ? 'Browser on' : 'Browser off'}
-            </a>
-            <a
               className={`opt ${showTelegram || tg === 'on' || tg === 'standby' ? 'on' : ''}`}
-              title={TELEGRAM_TIP[tg]}
+              title={`${state.telegram?.bot ? `@${state.telegram.bot}${state.telegram.paired ? ' · paired' : ''}\n` : ''}${TELEGRAM_TIP[tg]}`}
+              data-overlay
               // Once paired, one tap turns the bot on or off; right-click (or before pairing, a tap) opens its card.
-              onClick={() =>
-                tg === 'on' || tg === 'standby' ? send({ type: 'telegramPause' })
-                : tg === 'paused' && state.telegram?.paired ? send({ type: 'telegramResume' })
-                : setShowTelegram((v) => !v)
-              }
+              onClick={() => {
+                const on = tg === 'on' || tg === 'standby';
+                if (!on && !(tg === 'paused' && state.telegram?.paired)) return toggleOverlay('telegram');
+                send({ type: on ? 'telegramPause' : 'telegramResume' });
+                if (overlay !== 'telegram') setOverlay(null); // like a click elsewhere (an open card shows the new state)
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
-                setShowTelegram((v) => !v);
+                toggleOverlay('telegram');
               }}
             >
-              {tg === 'on' || tg === 'standby' ? 'Telegram ✓' : tg === 'error' ? 'Telegram ⚠' : tg === 'paused' ? 'Telegram off' : 'Telegram'}
+              {/* Once a bot is set up, a dot says at a glance whether it's on (green), off (hollow), half-way (amber) or broken (red). */}
+              {tg !== 'off' && <span className={`tg-dot ${tg}`} />}
+              Telegram
             </a>
             <a className="opt" title="Chime when agents finish" onClick={() => send({ type: 'toggleSound' })}>
               {state.soundOnDone ? '🔔' : '🔕'}
@@ -595,7 +612,7 @@ function Member({ a, model, st, u }: { a: Account; model?: { id: string; name: s
           </span>
         </span>
       </button>
-      <button className="act" title="Choose model and reasoning effort" onClick={() => send({ type: 'pickModel', id: a.id })}>
+      <button className="act" title="Model, reasoning effort, sign out" onClick={() => send({ type: 'pickModel', id: a.id })}>
         ▾
       </button>
       <button className={`act crown ${a.role === 'master' ? 'on' : ''}`} title={a.role === 'master' ? 'Lead' : 'Make lead'} onClick={() => send({ type: 'setMaster', id: a.id })}>
@@ -645,7 +662,8 @@ function Thumb({ file, uri }: { file: string; uri?: string }) {
 }
 
 /** Codex-style activity: what the agent said, in full, and its steps as compact lines. */
-function Timeline({ items, live }: { items: string[]; live?: boolean }) {
+/** `sub`: a helper's work, under its lead's: the same view, just not as tall. */
+function Timeline({ items, live, sub }: { items: string[]; live?: boolean; sub?: boolean }) {
   // Its own scroll box: follows new output, unless you scrolled up to read.
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -660,7 +678,7 @@ function Timeline({ items, live }: { items: string[]; live?: boolean }) {
   if (!items.length) return <div className="g-step now"><i>Thinking…</i></div>;
   return (
     <div
-      className="timeline"
+      className={`timeline${sub ? ' sub' : ''}`}
       ref={box}
       onScroll={(e) => {
         const el = e.currentTarget;
@@ -735,6 +753,88 @@ function groups(items: string[]): { say: boolean; at: number; items: string[] }[
   return out;
 }
 
+type Level = 'standard' | 'auto' | 'full';
+const ACCESS_NAME: Record<Level, string> = { standard: 'Ask', auto: 'Approve for me', full: 'Auto' };
+
+/**
+ * The access level, as a compact button with its menu in the shared overlay above the prompt box (a native select is
+ * as wide as its longest option, and VS Code closes its list whenever the panel re-renders).
+ */
+function Access({ value, open, onToggle, onPicked }: { value: Level; open: boolean; onToggle: () => void; onPicked: () => void }) {
+  return (
+    <>
+      <a className={`opt access-btn ${value} ${open ? 'on' : ''}`} data-overlay title={ACCESS_TIP[value]} onClick={onToggle}>
+        {ACCESS_NAME[value]} ▾
+      </a>
+      {open && (
+        <div className="overlay access-menu">
+          {(['standard', 'auto', 'full'] as Level[]).map((l) => (
+            <div
+              key={l}
+              className={`access-item ${l === value ? 'on' : ''}`}
+              onClick={() => {
+                send({ type: 'setAutonomy', value: l });
+                onPicked();
+              }}
+            >
+              <b className={l}>{ACCESS_NAME[l]}</b>
+              <span>{ACCESS_TIP[l].replace(/^[^:]+:\s*/, '')}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** What each access level means (the prompt box's selector). */
+const ACCESS_TIP: Record<Level, string> = {
+  standard: 'Ask: agents work in this folder; before going outside it (other folders, network) they ask you. Antigravity cannot ask: it stays in its sandbox.',
+  auto: 'Approve for me: same limits, but an automatic reviewer (Codex auto-review, Claude Code auto mode) approves or blocks requests instead of you. Antigravity has no reviewer: it works as in Ask.',
+  full: 'Auto: full access, no sandbox and no questions, for every agent. Undo per turn still works.',
+};
+
+/** An agent asks for something its sandbox blocks (outside the folder, network): allow it once, for the session, or deny. */
+function Approval({ t, who }: { t: Thread; who: string }) {
+  const a = t.approval!;
+  const [sent, setSent] = useState(false);
+  const answer = (x: 'accept' | 'acceptForSession' | 'decline') => {
+    setSent(true);
+    send({ type: 'approve', threadId: t.id, id: a.id, answer: x });
+  };
+  const what = a.kind === 'command' ? 'wants to run a command' : a.kind === 'files' ? 'wants to edit files' : a.kind === 'tool' ? `wants to use ${a.tool ?? 'a tool'}` : 'asks for more access';
+  return (
+    <div className="approval">
+      <div className="approval-head">
+        <b>{who}</b> {what}
+        {a.cwd && <span className="muted"> in {a.cwd}</span>}
+      </div>
+      {a.reason && <div className="approval-reason">{a.reason}</div>}
+      {a.command && <pre className="approval-cmd">{a.command}</pre>}
+      {a.paths && a.paths.length > 0 && (
+        <div className="approval-paths">
+          {a.kind === 'permissions' && <span className="muted">Write access to:</span>}
+          {a.paths.map((p) => (
+            <div key={p}>{p}</div>
+          ))}
+        </div>
+      )}
+      {a.network && <div className="approval-reason">Network access</div>}
+      <div className="approval-actions">
+        <button className="primary" disabled={sent} onClick={() => answer('accept')}>
+          Allow
+        </button>
+        <button className="ghost" disabled={sent} onClick={() => answer('acceptForSession')} title="Allow this and similar requests for the rest of this session">
+          Allow for this session
+        </button>
+        <button className="ghost danger" disabled={sent} onClick={() => answer('decline')} title="The agent is told you declined and carries on without it">
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Codex-style summary of the files a turn changed, with +/- line counts, a diff per file, and undo/redo. */
 function Changes({ threadId, at, c }: { threadId: string; at: number; c: RunChanges }) {
   const [all, setAll] = useState(false);
@@ -749,18 +849,24 @@ function Changes({ threadId, at, c }: { threadId: string; at: number; c: RunChan
     setTimeout(() => setBusy(false), 8000); // the result comes back as new state (or an error message)
   };
   return (
-    <div className={`changes${c.undone ? ' undone' : ''}`}>
+    <div className={`changes${c.undone ? ' undone' : ''}${c.expired ? ' expired' : ''}`}>
       <div className="changes-head">
         <span>
           {c.files.length} file{c.files.length === 1 ? '' : 's'} changed <span className="plus">+{add}</span> <span className="minus">-{del}</span>
           {c.undone && <span className="muted"> · undone</span>}
         </span>
-        <button className="ghost" disabled={busy} onClick={() => act(c.undone ? 'redoChanges' : 'undoChanges')} title={c.undone ? 'Put these changes back' : 'Revert every change this turn made'}>
-          {c.undone ? 'Redo' : 'Undo'}
-        </button>
+        {c.expired ? (
+          <span className="muted" title="Only the last few turns in a workspace keep the snapshots needed to undo them">
+            too old to undo
+          </span>
+        ) : (
+          <button className="ghost" disabled={busy} onClick={() => act(c.undone ? 'redoChanges' : 'undoChanges')} title={c.undone ? 'Put these changes back' : 'Revert every change this turn made'}>
+            {c.undone ? 'Redo' : 'Undo'}
+          </button>
+        )}
       </div>
       {shown.map((f) => (
-        <div key={f.path} className="change-row" title={`Show what changed in ${f.path}`} onClick={() => send({ type: 'openDiff', threadId, at, path: f.path })}>
+        <div key={f.path} className="change-row" title={c.expired ? f.path : `Show what changed in ${f.path}`} onClick={() => !c.expired && send({ type: 'openDiff', threadId, at, path: f.path })}>
           <span className="change-path">
             {baseName(f.path)}
             {f.path.includes('/') && <span className="muted"> {f.path.slice(0, f.path.lastIndexOf('/'))}</span>}
@@ -824,7 +930,7 @@ function Step({ text, live, since }: { text: string; live: boolean; since?: numb
     : icon === '▶' ? <><b>Ran</b> <code>{rest}</code></>
     : icon === '🔎' ? <><b>Searched</b> {rest}</>
     : icon === '🔧' && tool ? <><b>{cap(tool[1].replace(/_/g, ' '))}</b> <span className="g-arg">{open ? tool[2] : short(tool[2])}</span></>
-    : <span className="g-say">{rest}</span>;
+    : <span className="g-say">{rest.replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1')}</span>; // links in narration: just their text
   // Narration wraps in full; commands and paths stay on one line until clicked.
   const say = !['💭', '✏️', '▶', '🔎', '🔧'].includes(icon) || (icon === '🔧' && !tool);
   const long = !say && rest.length > 60;

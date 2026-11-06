@@ -108,20 +108,27 @@ export function contextBrief(t: Thread, labelOf: (id?: string) => string, why: s
     .join('\n\n');
 }
 
-/** Live team status, kept in the workspace so every agent can read it at any time. */
-export const TEAM_FILE = '.super-agent/team.md';
+/**
+ * For Antigravity, every turn. Headless it works silently (command after command, nothing in between), while Claude
+ * Code and Codex say what they're doing as they go; asked to, it narrates the same way, so its work can be followed.
+ */
+export const NARRATE = `<super-agent-internal>
+The user follows your work live, so give a short progress update (one sentence, plain text) at the moments that matter: when you start a new phase of the work (investigating, changing code, testing), when you find something important, and when your plan changes. Not before every command or file you read: routine steps go by without comment.
+</super-agent-internal>
+
+`;
 
 /**
  * What every agent (lead or helper) is told once per session. These are strong agents: they get the facts and the
  * mechanism, not a playbook.
  */
-export function leadPreamble(handoffDir: string): string {
+export function leadPreamble(handoffDir: string, teamFile: string): string {
   return `<super-agent-internal>
 You lead a team in Super Agent: other strong coding agents (Codex, Claude Code, Antigravity) work in this same folder, and you finish fastest by keeping all of them busy.
 - To give a teammate a task, write a Markdown file in \`${handoffDir}/\` (first line: a title; then what to do and which files it owns). A free teammate starts on it at once. Don't edit files you handed off.
 - Whenever a teammate is free and there is work that can run alongside yours (another item of a batch, a side check, tests, research), hand it over right away rather than doing it yourself. One task per free teammate; do yourself only what can't be split.
 - You are told the moment a teammate finishes (with its report) and who is free then. Leading comes first: check the result, give the free teammate its next task, then continue your own work.
-- \`${TEAM_FILE}\` shows live who is free or busy and every task's status.
+- \`${teamFile}\` shows live who is free or busy and every task's status.
 Keep this plumbing out of your replies unless the user asks about it.
 </super-agent-internal>
 

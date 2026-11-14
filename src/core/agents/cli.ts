@@ -10,19 +10,30 @@ export type RunMode = 'read-only' | 'write';
 export const CLI_META: Record<AgentKind, { name: string; bin: string; npm: string; brand: string }> = {
   codex: { name: 'Codex', bin: 'codex', npm: '@openai/codex', brand: 'OpenAI' },
   claude: { name: 'Claude Code', bin: 'claude', npm: '@anthropic-ai/claude-code', brand: 'Anthropic' },
-  // Installed with Google's script, not npm (see installCommand).
   antigravity: { name: 'Antigravity', bin: 'agy', npm: '', brand: 'Google' },
+};
+
+/**
+ * Each CLI's official Windows installer (a PowerShell script from its maker): no Node.js or npm needed, a per-user
+ * install (no admin), and the CLI then updates itself (`<cli> update`, see CliUpdater).
+ */
+export const INSTALL_SCRIPT: Record<AgentKind, string> = {
+  codex: 'https://chatgpt.com/codex/install.ps1',
+  claude: 'https://claude.ai/install.ps1',
+  antigravity: 'https://antigravity.google/cli/install.ps1',
 };
 
 /** Shell command that installs a CLI. */
 export function installCommand(kind: AgentKind): string {
-  return kind === 'antigravity'
-    ? 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://antigravity.google/cli/install.ps1 | iex"'
-    : `npm install -g ${CLI_META[kind].npm}`;
+  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${INSTALL_SCRIPT[kind]} | iex"`;
 }
 
+/**
+ * Where the installers put each CLI. Checked directly: a CLI installed while VS Code runs isn't on its PATH until
+ * VS Code restarts.
+ */
 const EXTRA_LOCATIONS: Record<AgentKind, string[]> = {
-  codex: [],
+  codex: [path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe')],
   claude: [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
   antigravity: [path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'agy', 'bin', 'agy.exe')],
 };

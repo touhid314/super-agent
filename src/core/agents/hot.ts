@@ -7,6 +7,7 @@ import { accountEnv, buildArgs, codexBrowser, commandLine, writeBrowserConfig, t
 import { log } from '../log';
 import { projectDir } from '../store/paths';
 import { killTreesNow } from './orphans';
+import { codexPrompts, expandPrompt } from './commands';
 import { ANSI, AUTH_FAILED, RATE_LIMIT, errorOf, killTree, renderAgyEvent, renderClaudeEvent, runAgent, toolLabel, type ApprovalAnswer, type ApprovalAsk, type RunRequest, type RunResult } from './runner';
 
 /**
@@ -304,7 +305,8 @@ export class HotAgents {
       // What it did on its own since its last reply belongs to this turn too (not that work's own end).
       for (const line of this.takeHeld(proc)) if (!isTurnEnd(proc, line)) this.onStreamLine(proc, line);
       const message = { role: 'user', content: req.prompt };
-      if (req.account.kind === 'claude') t.awaitingEcho = true;
+      // (A built-in command like /context runs locally and is never echoed: its result is ours straight away.)
+      if (req.account.kind === 'claude' && !req.command) t.awaitingEcho = true;
       const line = req.account.kind === 'claude' ? { type: 'user', message } : { event: 'user', message };
       proc.child.stdin?.write(JSON.stringify(line) + '\n');
     });
@@ -534,6 +536,9 @@ export class HotAgents {
       sandbox: req.mode === 'read-only' ? 'read-only' : req.autonomy === 'full' ? 'danger-full-access' : 'workspace-write',
       model: req.account.model ?? null,
     };
+    const plan: CodexPlan = req.command ? await this.codexCommand(s, req, req.command) : { method: 'turn/start', input: [{ type: 'text', text: req.prompt, text_elements: [] }] };
+    if ('reply' in plan) return this.reply(req, plan.reply);
+    if (plan.method === 'thread/compact/start' && !req.resume) return this.reply(req, 'Nothing to compact yet: this thread has no Codex conversation.');
     let threadId = req.resume;
     if (threadId && !s.loaded.has(threadId)) {
       const r = await this.call(s, 'thread/resume', { threadId, ...opts });
@@ -562,16 +567,82 @@ export class HotAgents {
         if (!r.error) this.emit(t, `\n→ ${label}\n`); // in the activity: who the inserted message is from
         return !r.error;
       });
-      void this.call(s, 'turn/start', { threadId: tid, approvalPolicy, approvalsReviewer, sandboxPolicy: sandboxPolicy(req), effort: req.account.effort ?? null, input: [{ type: 'text', text: req.prompt, text_elements: [] }] }).then((r) => {
+      const started =
+        plan.method === 'turn/start'
+          ? this.call(s, 'turn/start', { threadId: tid, approvalPolicy, approvalsReviewer, sandboxPolicy: sandboxPolicy(req), effort: req.account.effort ?? null, input: plan.input })
+          : plan.method === 'review/start'
+            ? this.call(s, 'review/start', { threadId: tid, target: plan.target, delivery: 'inline' })
+            : this.call(s, 'thread/compact/start', { threadId: tid }); // its turn id comes with turn/started
+      void started.then((r) => {
         if (r.error) {
           this.emit(t, `\n[codex] error: ${r.error.message ?? JSON.stringify(r.error)}\n`);
           s.turns.delete(tid);
           this.finish(t, 1);
           return;
         }
-        t.turnId = r.result?.turn?.id;
+        t.turnId ??= r.result?.turn?.id;
         if ((t.cancelled || t.timedOut) && t.turnId) void this.call(s, 'turn/interrupt', { threadId: tid, turnId: t.turnId });
       });
+    });
+  }
+
+  /**
+   * Codex's slash commands live in its terminal UI; headless, each maps to what its app-server offers: compact and
+   * review have their own calls, skills and custom prompts are turns, /init is the prompt Codex itself would send.
+   */
+  private async codexCommand(s: CodexServer, req: RunRequest, cmd: { name: string; args: string }): Promise<CodexPlan> {
+    const text = (t: string) => ({ method: 'turn/start' as const, input: [{ type: 'text', text: t, text_elements: [] }] as object[] });
+    switch (cmd.name) {
+      case 'compact':
+        return { method: 'thread/compact/start' };
+      case 'review': {
+        const base = /^base\s+(\S+)$/i.exec(cmd.args);
+        const commit = /^commit\s+(\S+)$/i.exec(cmd.args);
+        const target = !cmd.args
+          ? { type: 'uncommittedChanges' }
+          : base
+            ? { type: 'baseBranch', branch: base[1] }
+            : commit
+              ? { type: 'commit', sha: commit[1] }
+              : { type: 'custom', instructions: cmd.args };
+        return { method: 'review/start', target };
+      }
+      case 'init':
+        return text(INIT_PROMPT);
+      case 'mcp': {
+        const r = await this.call(s, 'mcpServerStatus/list', {});
+        if (r.error) return { reply: `Couldn't list MCP servers: ${r.error.message ?? 'error'}` };
+        const list = (r.result?.data ?? []) as any[];
+        const line = (x: any) => {
+          const state = typeof x.runtimeStatus === 'string' ? x.runtimeStatus : x.runtimeStatus?.status ?? x.runtimeStatus?.type;
+          const tools = Object.keys(x.tools ?? {}).length;
+          return `- **${x.name}**${state ? `: ${state}` : ''} · ${tools} tool${tools === 1 ? '' : 's'}${x.toolsError ? ` · ${String(x.toolsError).slice(0, 200)}` : ''}`;
+        };
+        return { reply: list.length ? `MCP servers:\n\n${list.map(line).join('\n')}` : 'No MCP servers are configured.' };
+      }
+    }
+    if (cmd.name.startsWith('prompts:')) {
+      const p = codexPrompts(req.account).find((x) => x.name === cmd.name);
+      return p ? text(expandPrompt(p.file, cmd.args)) : { reply: `No custom prompt named ${cmd.name.slice(8)}.` };
+    }
+    const r = await this.call(s, 'skills/list', { cwds: [req.cwd] });
+    const skill = ((r.result?.data ?? []) as any[]).flatMap((d) => d.skills ?? []).find((x: any) => x.name === cmd.name);
+    if (skill) {
+      const t = text(cmd.args || `Use the ${skill.name} skill.`);
+      t.input.push({ type: 'skill', name: skill.name, path: skill.path });
+      return t;
+    }
+    return { reply: `Codex has no /${cmd.name} command that works outside its terminal.` };
+  }
+
+  /** A command answered without a turn (e.g. /mcp): the run ends with this text. */
+  private reply(req: RunRequest, text: string): Promise<RunResult> {
+    return new Promise((resolve) => {
+      const t = this.open(req, resolve, () => undefined);
+      t.sessionId = req.resume;
+      t.final = text;
+      this.emit(t, '');
+      this.finish(t, 0);
     });
   }
 
@@ -626,8 +697,13 @@ export class HotAgents {
     if (!t) return;
     const item = p.item ?? {};
     switch (m.method) {
+      case 'turn/started':
+        (t as TurnCtx & { turnId?: string }).turnId ??= p.turn?.id; // a compaction's turn is only known from here
+        return;
       case 'item/started':
         if (item.type === 'reasoning') this.emit(t, '\nthinking\n');
+        else if (item.type === 'contextCompaction') this.emit(t, '\n→ compacting the conversation\n');
+        else if (item.type === 'enteredReviewMode') this.emit(t, `\n→ reviewing ${item.review ?? 'the changes'}\n`);
         // Codex labels each message: commentary on the way, or the final answer (shown as the answer while it streams).
         else if (item.type === 'agentMessage') this.emit(t, item.phase === 'final_answer' ? '\ncodex final\n' : '\ncodex\n');
         else if (item.type === 'commandExecution') this.emit(t, `\n→ run command ${unwrap(String(item.command ?? ''))}\n`);
@@ -651,6 +727,10 @@ export class HotAgents {
         if (item.type === 'agentMessage') {
           t.final = String(item.text ?? '');
           this.emit(t, '\n');
+        } else if (item.type === 'exitedReviewMode' && item.review) {
+          t.final = String(item.review); // the review itself is the answer
+        } else if (item.type === 'contextCompaction') {
+          t.final ||= 'Compacted the conversation: earlier messages are summarized to free up context.';
         }
         return;
       case 'error':
@@ -666,6 +746,34 @@ export class HotAgents {
     }
   }
 }
+
+/** How a Codex command runs: a turn with this input, one of its own calls, or an answer without a turn. */
+type CodexPlan =
+  | { method: 'turn/start'; input: object[] }
+  | { method: 'review/start'; target: object }
+  | { method: 'thread/compact/start' }
+  | { reply: string };
+
+/** What Codex's /init asks for (its own terminal UI sends a prompt like this). */
+const INIT_PROMPT = `Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
+Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise. 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections
+- Project Structure & Module Organization: where source code, tests, and assets are located.
+- Build, Test, and Development Commands: key commands for building, testing, and running locally, with a one-line explanation each.
+- Coding Style & Naming Conventions: indentation, language-specific style preferences, naming patterns, formatting or linting tools used.
+- Testing Guidelines: frameworks, coverage requirements, test naming conventions, how to run tests.
+- Commit & Pull Request Guidelines: commit message conventions found in the project's Git history, and PR requirements.
+- (Optional) Add other sections if relevant, such as security tips, architecture overview, or agent-specific instructions.`;
 
 /** Shows the command itself, not the PowerShell wrapper Codex runs it in. */
 function unwrap(cmd: string): string {

@@ -6,6 +6,8 @@ import { CLI_META, ensureAgyBrowser } from './core/agents/cli';
 import { AccountPool } from './core/agents/pool';
 import { HotAgents, askSummary } from './core/agents/hot';
 import { killOrphans } from './core/agents/orphans';
+import { CommandCatalog, parseCommand } from './core/agents/commands';
+import { installClis } from './core/agents/installer';
 import { cancelRun, cancelAll, runAgent } from './core/agents/runner';
 import { UsageService } from './core/agents/usage';
 import { ConfigStore } from './core/store/config';
@@ -20,10 +22,15 @@ import { fileTarget } from './links';
 import { createVoice } from './voice';
 import { listModels, modelInfo, type ModelOption } from './engine/models';
 import type { Thread } from './engine/types';
+import { buildExport, exportFileName, render, type ExportFormat } from './engine/export';
 
 let engine: Engine | undefined;
 /** Agent (CLI) names, as shown in hovers and the Telegram bot. */
 const AGENT_NAME: Record<AgentKind, string> = { codex: 'Codex', claude: 'Claude Code', antigravity: 'Antigravity' };
+/** "A, B and C". */
+const list = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+/** Reasoning effort levels (`default`: the CLI's own). */
+const EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 export function activate(context: vscode.ExtensionContext): void {
   // Electron hosts leak this into child processes, which would turn Node-based CLIs into plain node.
@@ -100,6 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
     before: (k) => hot.pause(k),
     after: (k) => {
       accounts.refreshClis();
+      catalog.clear(); // a new version may have other commands
       hot.resume(k);
       warmedAt = 0;
       warmTeam();
@@ -156,6 +164,96 @@ export function activate(context: vscode.ExtensionContext): void {
     onApproval: (t) => onApproval(t),
   });
   const eng = engine;
+
+  // ---------------------------------------------------------------- slash commands
+  // Each lead's own commands (built-ins, the user's commands, skills, plugins), asked of its CLI; ours come first.
+  const catalog = new CommandCatalog();
+  /** The commands of whoever would run a command in this thread (its conversation's agent, else the lead). */
+  const leadCommands = async (threadId?: string) => {
+    const a = eng.commandAccountFor(threadId);
+    const folder = cwd();
+    return a && folder ? { account: a, list: await catalog.list(a, accounts.cliPath(a.kind), folder) } : undefined;
+  };
+  /** Runs a command typed in the panel: ours here, the lead's in its conversation; false when it isn't a command. */
+  async function runCommand(threadId: string | undefined, text: string, folder: string): Promise<Thread | 'handled' | undefined> {
+    const cmd = parseCommand(text);
+    const found = cmd && (await leadCommands(threadId));
+    const known = found?.list.find((c) => c.name === cmd!.name);
+    if (!cmd || !found || !known) return undefined;
+    if (known.source === 'cli') return eng.sendCommand(threadId, text, folder);
+    const a = found.account;
+    if (cmd.name === 'new' || cmd.name === 'clear') post({ type: 'newThread' });
+    else if (cmd.name === 'export') {
+      const fmt = cmd.args.toLowerCase();
+      void exportConversation(threadId, fmt === 'json' ? 'json' : /^(md|markdown)$/.test(fmt) ? 'markdown' : undefined);
+    } else if (cmd.name === 'model') {
+      // No model given: the same picker as the model chip.
+      if (!cmd.args) void pickModel(a.id);
+      else {
+        accounts.update(a.id, { model: cmd.args === 'default' ? undefined : cmd.args });
+        void vscode.window.showInformationMessage(`${a.label} now uses ${cmd.args === 'default' ? 'its CLI default model' : cmd.args}.`);
+      }
+    } else if (cmd.name === 'effort') {
+      const level = cmd.args.toLowerCase();
+      if (!EFFORTS.includes(level)) void pickEffort(a.id);
+      else {
+        accounts.update(a.id, { effort: level === 'default' ? undefined : level });
+        void vscode.window.showInformationMessage(`${a.label} now uses ${level === 'default' ? 'its CLI default' : level} reasoning effort.`);
+      }
+    }
+    pushState();
+    return 'handled';
+  }
+
+  /**
+   * Saves a conversation (with its helper threads) as Markdown or JSON. No thread given: the one open in the panel,
+   * else you pick one. No format given: you pick one.
+   */
+  async function exportConversation(threadId?: string, format?: ExportFormat): Promise<void> {
+    let t = threadId ? eng.get(threadId) : undefined;
+    t ??= eng.get(context.workspaceState.get<string>('superAgent.openThread') ?? '');
+    // A helper's thread is part of its lead's conversation: export the whole conversation.
+    while (t?.parentId && eng.get(t.parentId)) t = eng.get(t.parentId)!;
+    if (!t || !t.messages.length) {
+      const items = eng.threads
+        .filter((x) => !x.parentId && x.messages.length > 0)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map((x) => ({ label: x.title, description: new Date(x.updatedAt).toLocaleString(), id: x.id }));
+      if (!items.length) return void vscode.window.showInformationMessage('No conversations to export yet.');
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Which conversation do you want to export?' });
+      if (!pick) return;
+      t = eng.get(pick.id);
+      if (!t) return;
+    }
+    if (!format) {
+      const pick = await vscode.window.showQuickPick(
+        [
+          { label: 'Markdown', description: 'Readable document (.md)', format: 'markdown' as const },
+          { label: 'JSON', description: 'Structured data (.json)', format: 'json' as const },
+        ],
+        { placeHolder: `Export "${t.title}" as…` },
+      );
+      if (!pick) return;
+      format = pick.format;
+    }
+    const name = exportFileName(t.title, format);
+    const dir = cwd() ?? t.cwd;
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(dir, name)),
+      filters: format === 'json' ? { JSON: ['json'] } : { Markdown: ['md'] },
+      saveLabel: 'Export',
+    });
+    if (!target) return;
+    try {
+      const body = render(buildExport(eng.threads, t.id, (id) => eng.label(id)), format);
+      await vscode.workspace.fs.writeFile(target, Buffer.from(body, 'utf8'));
+    } catch (err) {
+      return void vscode.window.showErrorMessage(`Couldn't export the conversation: ${(err as Error).message}`);
+    }
+    const open = await vscode.window.showInformationMessage(`Exported "${t.title}" to ${path.basename(target.fsPath)}.`, 'Open');
+    if (open) void vscode.window.showTextDocument(target, { preview: true });
+  }
+
   // An agent that already replied carries on by itself (its background task woke it): show it as a new turn.
   hot.onWake = (w) => void eng.wake(w.account.id, w.sessionId);
   // …and while it waits for that work, its thread says so.
@@ -206,6 +304,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return dir;
     },
     agentName: modelName,
+    isLeadCommand: async (threadId, name) => !!(await leadCommands(threadId))?.list.some((c) => c.name === name && c.source === 'cli'),
     team: {
       members: () =>
         config.accounts.map((a) => {
@@ -480,16 +579,20 @@ export function activate(context: vscode.ExtensionContext): void {
     if (pick.id === '__signIn') return accounts.signIn(id);
     if (pick.id === '__signOut') return signOutAccount(a);
     if (pick.id === '__remove') return removeAccount(a);
-    if (pick.id === '__effort') {
-      const levels = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
-      const e = await vscode.window.showQuickPick(
-        levels.map((l) => ({ label: `${(a.effort ?? '') === l ? '$(check) ' : ''}${l || 'CLI default'}`, id: l })),
-        { placeHolder: `Reasoning effort for ${a.label}` },
-      );
-      if (e) accounts.update(id, { effort: e.id || undefined });
-      return pushState();
-    }
+    if (pick.id === '__effort') return pickEffort(id);
     accounts.update(id, { model: pick.id });
+    pushState();
+  }
+
+  async function pickEffort(id: string): Promise<void> {
+    const a = config.accounts.find((x) => x.id === id);
+    if (!a) return;
+    const levels = ['', ...EFFORTS.filter((l) => l !== 'default')];
+    const e = await vscode.window.showQuickPick(
+      levels.map((l) => ({ label: `${(a.effort ?? '') === l ? '$(check) ' : ''}${l || 'CLI default'}`, id: l })),
+      { placeHolder: `Reasoning effort for ${a.label}` },
+    );
+    if (e) accounts.update(id, { effort: e.id || undefined });
     pushState();
   }
 
@@ -541,6 +644,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const pick = await vscode.window.showQuickPick(items, { placeHolder: items.length ? 'Open a thread' : 'No threads yet' });
       if (pick) post({ type: 'selected', threadId: pick.id });
     }),
+    vscode.commands.registerCommand('superAgent.exportThread', (threadId?: unknown) => exportConversation(typeof threadId === 'string' ? threadId : undefined)),
     vscode.commands.registerCommand('superAgent.addAccount', () => addAccount()),
     vscode.commands.registerCommand('superAgent.stopAll', () => eng.threads.forEach((t) => eng.stop(t.id))),
     vscode.commands.registerCommand('superAgent.connectTelegram', showTelegram),
@@ -549,6 +653,47 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => relay.stop() },
     { dispose: () => clearInterval(telegramTimer) },
   );
+
+  // ---------------------------------------------------------------- agent CLIs: first-run setup
+  let installing: Promise<void> | undefined;
+  /** Installs these CLIs in the background (each maker's own installer), with progress; one batch at a time. */
+  function installMissing(kinds: AgentKind[]): Promise<void> {
+    if (installing) return installing.then(() => installMissing(kinds.filter((k) => !accounts.cliPath(k))));
+    if (!kinds.length) return Promise.resolve();
+    const names = list(kinds.map((k) => AGENT_NAME[k]));
+    installing = Promise.resolve(
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Super Agent: installing ${names}…` }, async () => {
+        const results = await installClis(kinds, (k) => (accounts.refreshClis(), !!accounts.cliPath(k)));
+        warmedAt = 0;
+        warmTeam();
+        pushState();
+        const done = results.filter((r) => r.ok).map((r) => AGENT_NAME[r.kind]);
+        if (done.length) void vscode.window.showInformationMessage(`${list(done)} installed. Add an account with + in the Super Agent panel to sign in.`);
+        for (const r of results.filter((x) => !x.ok)) {
+          const pick = await vscode.window.showWarningMessage(`Couldn't install ${AGENT_NAME[r.kind]}: ${r.error}`, 'Install in a terminal');
+          if (pick) accounts.installCli(r.kind); // shows the installer's own output, and anything it asks
+        }
+      }),
+    ).finally(() => (installing = undefined));
+    return installing;
+  }
+
+  // First run (and later starts, until you choose): offer to install the agent CLIs that are missing.
+  const missing = AGENT_KINDS.filter((k) => !accounts.cliPath(k));
+  if (missing.length && !context.globalState.get<boolean>('superAgent.skipCliSetup')) {
+    const names = list(missing.map((k) => AGENT_NAME[k]));
+    void vscode.window
+      .showInformationMessage(
+        `Super Agent's team runs on Codex, Claude Code and Antigravity. ${names} ${missing.length === 1 ? 'is' : 'are'} not installed yet. Install ${missing.length === 1 ? 'it' : 'them'} now? (Official installers, no admin rights needed.)`,
+        'Install',
+        'Not now',
+        "Don't ask again",
+      )
+      .then((pick) => {
+        if (pick === 'Install') void installMissing(missing);
+        else if (pick === "Don't ask again") void context.globalState.update('superAgent.skipCliSetup', true);
+      });
+  }
 
   /** Adds an account of `kind`, asking which agent first when none is given. */
   async function addAccount(kind?: AgentKind): Promise<void> {
@@ -562,7 +707,8 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       const acc = accounts.add(pick.agent, '');
       if (accounts.cliPath(pick.agent)) accounts.signIn(acc.id);
-      else accounts.installCli(pick.agent);
+      // Its CLI isn't installed yet: install it, then sign in right away.
+      else void installMissing([pick.agent]).then(() => accounts.cliPath(pick.agent) && accounts.signIn(acc.id));
     } catch (err) {
       void vscode.window.showErrorMessage(String((err as Error).message));
     }
@@ -602,12 +748,24 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       {
         const files = Array.isArray(m.attachments) ? (m.attachments as string[]) : [];
-        const t = eng.send(m.threadId, m.text, folder, files, m.mode === 'queue' ? 'queue' : 'now');
-        post({ type: 'selected', threadId: t.id });
-        // Synced with Telegram while it's on: the chat sees your message, then the agent's progress and reply.
-        void telegram?.onPanelMessage(t, String(m.text ?? ''), files).catch((e) => log.appendLine(`Telegram: ${e.message}`));
+        const text = String(m.text ?? '');
+        void (async () => {
+          // A slash command (no attachments): the lead's goes to its CLI as typed, ours runs here.
+          const ran = !files.length ? await runCommand(m.threadId, text, folder).catch(() => undefined) : undefined;
+          if (ran === 'handled') return;
+          const t = ran ?? eng.send(m.threadId, text, folder, files, m.mode === 'queue' ? 'queue' : 'now');
+          post({ type: 'selected', threadId: t.id });
+          // Synced with Telegram while it's on: the chat sees your message, then the agent's progress and reply.
+          void telegram?.onPanelMessage(t, text, files).catch((e) => log.appendLine(`Telegram: ${e.message}`));
+        })();
         return;
       }
+      case 'listCommands':
+        // The panel's / menu: whose commands they are (shown with them) and the list.
+        void leadCommands(typeof m.threadId === 'string' ? m.threadId : undefined).then((r) =>
+          post({ type: 'commands', threadId: m.threadId ?? null, kind: r?.account.kind, label: r ? modelName(r.account.id) : undefined, list: r?.list ?? [] }),
+        );
+        return;
       case 'attach':
         return void attachFiles();
       case 'voiceStart':

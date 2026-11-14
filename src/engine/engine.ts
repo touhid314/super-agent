@@ -12,6 +12,10 @@ import { ActivityParser } from './activity';
 import { CLI_META } from '../core/agents/cli';
 import { OUTDATED, type UpdateResult } from '../core/agents/updater';
 import { UNDO_TURNS, type ChangeTracker } from './changes';
+import { parseCommand } from '../core/agents/commands';
+
+/** Marks a queued prompt as a slash command (sent as typed, see sendCommand); never part of anything the user types. */
+const CMD = '\u0000cmd\u0000';
 
 /** A turn's activity kept for the panel (items / characters per item). */
 const MAX_ACTIVITY = 300;
@@ -236,6 +240,37 @@ export class Engine {
     return t;
   }
 
+  /**
+   * One of the lead's own slash commands (`/compact`, `/review`, a skill…): it goes to the lead's CLI exactly as typed,
+   * in this thread's conversation, without the team notes and context other messages get. While the thread is busy it
+   * runs after the current turn.
+   */
+  sendCommand(threadId: string | undefined, text: string, cwd: string): Thread {
+    const typed = text.trim();
+    let t = threadId ? this.get(threadId) : undefined;
+    log('engine', 'user command', { thread: t?.id ?? 'new', status: t?.status, text: typed.slice(0, 120) });
+    t ??= this.create(titleOf(typed), cwd);
+    this.push(t, { role: 'user', text: typed });
+    if (t.status === 'idle' && !t.queue.length) {
+      t.work = undefined;
+      this.schedule(t, CMD + typed);
+    } else {
+      t.queue.push(CMD + typed);
+      this.sys(t, `Queued: ${typed.split(/\s/)[0]} runs once the current work is done.`);
+    }
+    return t;
+  }
+
+  /** Whose slash commands a thread offers: the agent holding its conversation, else the one that would lead it. */
+  commandAccountFor(threadId?: string): Account | undefined {
+    return this.commandAccount(threadId ? this.get(threadId) : undefined);
+  }
+
+  private commandAccount(t?: Thread): Account | undefined {
+    const ok = (a?: Account) => (a && !this.isOut(a) ? a : undefined);
+    return ok(this.account(t?.session?.accountId)) ?? ok(this.account(t?.pinnedLeadId)) ?? ok(this.preferredLead()) ?? this.free()[0];
+  }
+
   newThread(cwd: string): Thread {
     return this.create('New thread', cwd);
   }
@@ -444,6 +479,13 @@ export class Engine {
   }
 
   private schedule(t: Thread, prompt: string, preferred?: Account): void {
+    if (prompt.startsWith(CMD)) {
+      // A slash command belongs to one CLI's conversation: it runs on that agent or not at all (no waiting, no hand-over).
+      const target = preferred ?? this.commandAccount(t);
+      if (target) return void this.start(t, target, prompt);
+      this.sys(t, `No agent can run ${prompt.slice(CMD.length).split(/\s/)[0]} now (all are out of usage or signed out).`);
+      return this.pump();
+    }
     const acc = preferred ?? this.pick(t);
     log('engine', acc ? `schedule "${t.title}" → ${acc.label}` : `schedule "${t.title}": no free agent, waiting`, { thread: t.id, free: this.free().map((a) => a.label) });
     if (!acc) {
@@ -516,7 +558,9 @@ export class Engine {
     if (!cli) return;
     // Work moving away from an agent that is out of usage is always announced (here, in one place). When it is the
     // lead you chose (crowned, or pinned on this thread), the agent taking over becomes the lead.
-    if (!attach) {
+    // A slash command is sent exactly as typed: anything before it would make it plain text to the CLI.
+    const command = prompt.startsWith(CMD) ? prompt.slice(CMD.length) : undefined;
+    if (!attach && !command) {
       const was = this.account(t.leadId);
       const chosen = this.account(t.pinnedLeadId) ?? this.preferredLead();
       if (chosen && chosen.id !== acc.id && this.isOut(chosen)) {
@@ -529,7 +573,7 @@ export class Engine {
       }
     }
     let resume: string | undefined;
-    let input = prompt;
+    let input = command ?? prompt;
     const prev = t.session;
     if (attach) {
       resume = prev?.id;
@@ -537,20 +581,22 @@ export class Engine {
       resume = prev.id;
     } else if (prev && prev.kind === acc.kind && acc.kind !== 'antigravity' && this.account(prev.accountId) && transferSession(prev, this.account(prev.accountId)!, acc)) {
       resume = prev.id; // exact context carried to another account of the same CLI
-    } else if (prev || t.messages.length > 1) {
+    } else if (!command && (prev || t.messages.length > 1)) {
       input = `${contextBrief(t, (id) => this.label(id), prev ? `continuing from ${this.label(prev.accountId)}` : 'continuing this thread')}\n\n## Now\n${prompt}`;
     }
-    // Every thread, helpers included, can hand off work; its own folder tells us exactly who asked.
-    // An agent without teammates gets no team instructions: hand-offs would only come back to itself, one by one.
-    const hasTeam = this.d.config.accounts.some((a) => a.id !== acc.id && a.role !== 'off');
-    // How to hand off: on every new session, and on a resumed one that never got it (it began without teammates).
-    if (hasTeam && !attach && (!resume || !t.teamTold)) {
-      input = this.howToLead(t) + input;
-      t.teamTold = true;
-    } else if (!resume && !attach) t.teamTold = false;
-    if (!attach) t.knownTeam = this.teamIds(acc.id); // who it was told about (see teamChanged)
-    if (!attach) input = this.teamNote(t, acc) + input; // every turn: who is free changes all the time
-    if (!attach && acc.kind === 'antigravity') input = NARRATE + input; // otherwise it works without a word
+    if (!command) {
+      // Every thread, helpers included, can hand off work; its own folder tells us exactly who asked.
+      // An agent without teammates gets no team instructions: hand-offs would only come back to itself, one by one.
+      const hasTeam = this.d.config.accounts.some((a) => a.id !== acc.id && a.role !== 'off');
+      // How to hand off: on every new session, and on a resumed one that never got it (it began without teammates).
+      if (hasTeam && !attach && (!resume || !t.teamTold)) {
+        input = this.howToLead(t) + input;
+        t.teamTold = true;
+      } else if (!resume && !attach) t.teamTold = false;
+      if (!attach) t.knownTeam = this.teamIds(acc.id); // who it was told about (see teamChanged)
+      if (!attach) input = this.teamNote(t, acc) + input; // every turn: who is free changes all the time
+      if (!attach && acc.kind === 'antigravity') input = NARRATE + input; // otherwise it works without a word
+    }
     this.watchHandoffs(t.cwd);
 
     const runId = newId();
@@ -599,6 +645,7 @@ export class Engine {
         browser: true, // a standard tool: every agent can open pages, click, fill forms and take screenshots
         attach,
         onApproval: (ask) => this.askUser(t, ask),
+        command: command ? parseCommand(command) : undefined,
       });
     } finally {
       this.cancelAsks(t);
@@ -631,6 +678,18 @@ export class Engine {
         t.queue = [];
         this.push(t, { role: 'system', text: 'Stopped.', ...this.takeWork(t) });
       }
+    } else if (command) {
+      // A command's result is the CLI's own (no retries or hand-overs: another agent's CLI has other commands).
+      if (res.rateLimited) this.d.pool.coolDown(acc.id, COOLDOWN_MIN, 'Out of usage');
+      if (res.sessionId) t.session = { accountId: acc.id, kind: acc.kind, id: res.sessionId };
+      t.status = 'idle';
+      const name = command.split(/\s/)[0];
+      if (res.finalText) this.push(t, { role: 'agent', text: res.finalText, accountId: acc.id, ...this.takeWork(t, res.finalText) });
+      else {
+        const why = res.rateLimited ? `${acc.label} is out of usage` : res.authFailed ? `${acc.label} is unavailable` : res.timedOut ? 'timed out' : res.error;
+        this.push(t, { role: 'system', text: why ? `${name} failed: ${why}.` : `${name} done.`, ...this.takeWork(t) });
+      }
+      this.d.onFinished(t, res.finalText || !(res.error || res.rateLimited || res.authFailed || res.timedOut) ? 'done' : 'failed');
     } else if (res.rateLimited || res.authFailed) {
       // Feature 2: out of usage mid-task → a free agent continues with this agent's context.
       if (res.rateLimited) {

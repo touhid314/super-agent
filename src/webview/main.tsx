@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { Account, AccountStatus, AccountUsage } from '../core/types';
 import { AgentLogo, TelegramLogo } from './components/Logos';
 import { CopyButton, Markdown } from './components/Markdown';
+import { useSlashMenu } from './components/SlashMenu';
 import type { RunChanges, Thread } from '../engine/types';
 import { TelegramCard, type TelegramView } from './telegram';
 
@@ -118,6 +119,8 @@ function App() {
   const [pending, setPending] = useState<Record<string, string>>({});
   const feed = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  // (Before any early return: hooks run in the same order every render.)
+  const slash = useSlashMenu(draft, setDraft, (state?.threads.some((t) => t.id === selected) ? selected : null) ?? undefined, send);
 
   useEffect(() => {
     const on = (e: MessageEvent) => {
@@ -488,6 +491,7 @@ function App() {
             </div>
           </div>
         )}
+        {!overlay && slash.menu}
         <div className="box" onClick={() => input.current?.focus()}>
           {attachments.length > 0 && (
             <div className="files">
@@ -517,6 +521,7 @@ function App() {
               placeholder={!thread ? 'Ask the team to do anything' : working ? 'Message the lead while it works (Enter: now · Alt+Enter: queue)' : 'Ask for follow-up changes'}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                if (slash.onKeyDown(e)) return;
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   submit(e.altKey && working ? 'queue' : 'now');
@@ -532,10 +537,6 @@ function App() {
             {team.length > 0 && (
               <span className="team-count" title={team.map((a) => `${modelName(a.id)} (${a.label.replace(/^[^·]+·\s*/, '')})${(state.status[a.id]?.busyRuns ?? 0) > 0 ? ' · working' : ''}`).join('\n')}>
                 {team.length} agent team
-                {(() => {
-                  const busy = team.filter((a) => (state.status[a.id]?.busyRuns ?? 0) > 0).length;
-                  return busy > 0 ? ` · ${busy} working` : '';
-                })()}
               </span>
             )}
             <span className="spacer" />

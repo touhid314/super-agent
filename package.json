@@ -3,12 +3,21 @@
   "displayName": "Super Agent",
   "description": "One agent leads, the team helps: Codex, Claude Code and Antigravity across all your accounts, with seamless hand-over when usage runs out.",
   "version": "0.3.7",
-  "publisher": "super-agent-dev",
-  "private": true,
-  "license": "UNLICENSED",
+  "publisher": "touhidul-islam",
+  "author": "Touhidul Islam",
+  "license": "CC-BY-NC-4.0",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#4f46e5",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/touhid314/super-agent"
+  },
+  "homepage": "https://github.com/touhid314/super-agent#readme",
+  "bugs": {
+    "url": "https://github.com/touhid314/super-agent/issues"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -17,6 +26,14 @@
     "AI",
     "Chat",
     "Other"
+  ],
+  "keywords": [
+    "codex",
+    "claude code",
+    "antigravity",
+    "multi-agent",
+    "ai agents",
+    "telegram"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -43,6 +60,11 @@
           "command": "superAgent.history",
           "when": "view == superAgent.team",
           "group": "navigation@2"
+        },
+        {
+          "command": "superAgent.exportThread",
+          "when": "view == superAgent.team",
+          "group": "navigation@3"
         }
       ]
     },
@@ -73,6 +95,12 @@
         "icon": "$(history)"
       },
       {
+        "command": "superAgent.exportThread",
+        "title": "Export Conversation",
+        "category": "Super Agent",
+        "icon": "$(export)"
+      },
+      {
         "command": "superAgent.addAccount",
         "title": "Super Agent: Add Agent Account"
       },
@@ -94,7 +122,8 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --dir tests",
-    "package": "node build.mjs && npx --yes @vscode/vsce package --no-dependencies --skip-license --allow-missing-repository"
+    "package": "node build.mjs && npx --yes @vscode/vsce package --no-dependencies --target win32-x64 && npx --yes @vscode/vsce package --no-dependencies --target win32-arm64",
+    "publish": "node build.mjs && npx --yes @vscode/vsce publish --no-dependencies --target win32-x64 win32-arm64"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",

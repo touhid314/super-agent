@@ -32,6 +32,11 @@ export interface RunRequest {
    * answer it. Without this, nothing is asked and the sandbox simply blocks (hot Codex only, Standard autonomy).
    */
   onApproval?: (ask: ApprovalAsk) => Promise<ApprovalAnswer>;
+  /**
+   * The prompt is one of the CLI's own slash commands (`/compact`, a skill…), sent as is. Claude Code and Antigravity
+   * run it from the text; Codex has no slash commands headless, so hot Codex maps it to its app-server (see HotAgents).
+   */
+  command?: { name: string; args: string };
 }
 
 /** What an agent asks permission for. */

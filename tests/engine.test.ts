@@ -132,6 +132,58 @@ describe('attachments and browser', () => {
   });
 });
 
+describe("the lead's slash commands", () => {
+  it('sends a command as typed, in the same conversation, without team notes or context', async () => {
+    const h = setup([acc('c', 'claude', 'master'), acc('x', 'codex')], async (req, n) => ok(n === 1 ? 'built it' : 'Compacted.', 'sess-c'));
+    const t = h.engine.send(undefined, 'build the thing', h.cwd);
+    await h.idle();
+    h.engine.sendCommand(t.id, '/compact keep the API notes', h.cwd);
+    await h.idle();
+    expect(h.runs[1]).toMatchObject({ prompt: '/compact keep the API notes', resume: 'sess-c', command: { name: 'compact', args: 'keep the API notes' } });
+    expect(t.messages.map((m) => [m.role, m.text])).toEqual([
+      ['user', 'build the thing'],
+      ['agent', 'built it'],
+      ['user', '/compact keep the API notes'],
+      ['agent', 'Compacted.'],
+    ]);
+  });
+
+  it('runs after the current turn when the thread is busy', async () => {
+    let release!: () => void;
+    const h = setup([acc('c', 'claude', 'master')], async (req, n) => {
+      if (n === 1) await new Promise<void>((r) => (release = r));
+      return ok(`answer ${n}`, 'sess-c');
+    });
+    const t = h.engine.send(undefined, 'long task', h.cwd);
+    await h.idle(() => h.runs.length === 1);
+    h.engine.sendCommand(t.id, '/context', h.cwd);
+    expect(msgs(t, 'system').at(-1)).toBe('Queued: /context runs once the current work is done.');
+    release();
+    await h.idle(() => h.runs.length === 2 && t.status === 'idle');
+    expect(h.runs[1]).toMatchObject({ prompt: '/context', resume: 'sess-c' });
+  });
+
+  it("goes to the agent holding the thread's conversation, and is never handed over", async () => {
+    const h = setup([acc('x', 'codex', 'master'), acc('c', 'claude')], async (req) =>
+      req.prompt.startsWith('/') ? { code: 1, finalText: '', rateLimited: true, cancelled: false, timedOut: false } : ok('done', 'sess-x'),
+    );
+    const t = h.engine.send(undefined, 'start', h.cwd);
+    await h.idle();
+    h.engine.sendCommand(t.id, '/review', h.cwd);
+    await h.idle();
+    expect(h.runs.map((r) => r.account.id)).toEqual(['x', 'x']);
+    expect(msgs(t, 'system').at(-1)).toBe('/review failed: x is out of usage.');
+  });
+
+  it("reports a command that answers nothing as done", async () => {
+    const h = setup([acc('c', 'claude', 'master')], async () => ({ code: 0, finalText: '', sessionId: 's', rateLimited: false, cancelled: false, timedOut: false }));
+    const t = h.engine.sendCommand(undefined, '/init', h.cwd);
+    await h.idle();
+    expect(msgs(t, 'system')).toEqual(['/init done.']);
+    expect(h.engine.commandAccountFor(t.id)?.id).toBe('c');
+  });
+});
+
 describe('seamless hand-over when usage runs out', () => {
   it('a free agent continues with a context brief (different CLI)', async () => {
     const h = setup([acc('a', 'codex', 'master'), acc('c', 'claude')], async (req) =>

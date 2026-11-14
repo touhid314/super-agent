@@ -10,6 +10,13 @@
 
 ---
 
+## Getting started
+
+1. Install **Super Agent** from the VS Code Marketplace (Windows 10/11).
+2. On first start it offers to install the agent CLIs you don't have yet (**Codex**, **Claude Code**, **Antigravity**) with each maker's official installer. No admin rights or Node.js needed.
+3. Open the Super Agent panel in the Activity Bar, click **+** to add an account and sign in. Add as many accounts as you have.
+4. Open a folder and ask the team for anything.
+
 ## Why Super Agent
 
 Coding agents are great until you hit a usage limit in the middle of a task, or until you have three subscriptions and can only drive one at a time. Super Agent puts **Codex**, **Claude Code** and **Antigravity**, with as many accounts of each as you like, behind one panel, and lets them work together:
@@ -123,10 +130,20 @@ Claude Code · work        Codex · personal
 - **Files changed by agents are marked in the Explorer** with the name of the agent that changed them.
 - **Thread history** that survives restarts. A thread interrupted by closing VS Code picks up on your next message.
 - **Attach images and files** to a request.
+- **The lead's own slash commands:** type `/` for the lead's commands, skills and custom prompts (`/compact`, `/review`, `/init`, …), plus Super Agent's `/new`, `/model` and `/effort`.
 - **Browser tools:** agents can navigate, click, read pages and take screenshots (Playwright).
 - **A chime** when work finishes, a different one when a helper finishes a piece or something fails.
 - **Stop everything** with one command.
 - Matches any VS Code theme.
+
+## Requirements
+
+- Windows 10 or 11 (x64 or ARM64) and VS Code 1.90 or newer.
+- An account with at least one of: OpenAI (Codex), Anthropic (Claude Code), Google (Antigravity).
+
+## License
+
+© 2026 Touhidul Islam. Licensed under [CC BY-NC 4.0](LICENSE): free to use, share and adapt for non-commercial purposes, with attribution. For commercial use, please get in touch.
 
 ## Project layout
 

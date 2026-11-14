@@ -7,6 +7,7 @@ import { esc, markdownToTelegram } from './telegram-md';
 import { ProgressTracker, elapsed } from './telegram-progress';
 import { TeamPanel, type TeamDeps } from './telegram-team';
 import type { Thread } from './engine/types';
+import { parseCommand } from './core/agents/commands';
 
 /** Where the relay keeps its pairing and thread choice. */
 export interface RelayStore {
@@ -54,6 +55,8 @@ export interface RelayDeps {
   log(line: string): void;
   onChange(): void;
   fetch?: typeof fetch;
+  /** Whether `/name` is one of the slash commands of the agent that would run it in this thread (its CLI's own). */
+  isLeadCommand?(threadId: string | undefined, name: string): Promise<boolean>;
 }
 
 export type RelayState = 'off' | 'pairing' | 'on' | 'standby' | 'error';
@@ -72,7 +75,11 @@ const HELP = [
   '/new: start a new thread',
   '/threads: recent threads (switch with /use N)',
   '/stop: stop the current thread',
+  '',
+  "The lead's own commands work too (e.g. /compact, /review, its skills): they go to its CLI as typed.",
 ].join('\n');
+/** The bot's own commands (anything else starting with / may be the lead's, see isLeadCommand). */
+const TG_COMMANDS = new Set(['start', 'help', 'pair', 'new', 'threads', 'sync', 'use', 'stop', 'team', 'agents', 'files', 'ls', 'recent', 'find', 'search']);
 
 interface TgCallback {
   id: string;
@@ -333,7 +340,10 @@ export class TelegramRelay {
       return;
     }
 
-    const cmd = /^\/(\w+)(?:@\w+)?\s*(.*)$/s.exec(text);
+    // The lead's own slash commands (/compact, /review, skills…) go to its CLI as typed; ours are handled here.
+    const lead = !m.photo && !m.document ? parseCommand(text.replace(/^(\/[^\s@]+)@\w+/, '$1')) : undefined;
+    const leadCommand = !!lead && !TG_COMMANDS.has(lead.name) && !!(await this.d.isLeadCommand?.(this.current, lead.name));
+    const cmd = leadCommand ? null : /^\/(\w+)(?:@\w+)?\s*(.*)$/s.exec(text);
     if (cmd && !m.photo && !m.document) {
       const [, name, arg] = cmd;
       if (name === 'start' || name === 'help') return void (await this.reply(chat, HELP));
@@ -376,7 +386,10 @@ export class TelegramRelay {
 
     const before = new Map(this.d.engine.threads.map((t) => [t.id, t.messages.length]));
     const current = this.current;
-    const t = this.d.engine.send(current, text, cwd, files);
+    const t =
+      leadCommand && lead && !files.length
+        ? this.d.engine.sendCommand(current, `/${lead.name}${lead.args ? ` ${lead.args}` : ''}`, cwd) // without the @bot suffix
+        : this.d.engine.send(current, text, cwd, files);
     this.track(t.id);
     // A message to a busy lead may become its own thread; your conversation stays where it was.
     if (!current || (t.id !== current && t.parentId !== current)) this.setCurrent(t.id);

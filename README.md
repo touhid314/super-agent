@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">
-    <img src="https://img.shields.io/visual-studio-marketplace/v/touhidul-islam.super-agent-touhid?label=VS%20Code%20Marketplace&logo=visualstudiocode&color=4f46e5" alt="VS Code Marketplace">
+    <img src="https://img.shields.io/badge/VS%20Code%20Marketplace-Install-4f46e5" alt="VS Code Marketplace">
   </a>
 </p>
 

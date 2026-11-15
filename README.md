@@ -8,11 +8,17 @@
   and keeps working when one of them runs out of usage.
 </p>
 
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">
+    <img src="https://img.shields.io/visual-studio-marketplace/v/touhidul-islam.super-agent-touhid?label=VS%20Code%20Marketplace&logo=visualstudiocode&color=4f46e5" alt="VS Code Marketplace">
+  </a>
+</p>
+
 ---
 
 ## Getting started
 
-1. Install **Super Agent** from the VS Code Marketplace (Windows 10/11).
+1. Install [**Super Agent** from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid) (Windows 10/11).
 2. On first start it offers to install the agent CLIs you don't have yet (**Codex**, **Claude Code**, **Antigravity**) with each maker's official installer. No admin rights or Node.js needed.
 3. Open the Super Agent panel in the Activity Bar, click **+** to add an account and sign in. Add as many accounts as you have.
 4. Open a folder and ask the team for anything.

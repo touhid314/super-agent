@@ -1,8 +1,8 @@
 {
-  "name": "super-agent",
+  "name": "super-agent-touhid",
   "displayName": "Super Agent",
-  "description": "One agent leads, the team helps: Codex, Claude Code and Antigravity across all your accounts, with seamless hand-over when usage runs out.",
-  "version": "0.3.7",
+  "description": "Use all your coding agents (Codex, Claude Code, Antigravity) in one place as a multi-agent team, and control them from your phone too.",
+  "version": "0.3.8",
   "publisher": "touhidul-islam",
   "author": "Touhidul Islam",
   "license": "CC-BY-NC-4.0",

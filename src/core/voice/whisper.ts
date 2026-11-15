@@ -55,6 +55,9 @@ export class Whisper {
   async install(progress: Progress): Promise<void> {
     fs.mkdirSync(this.dir, { recursive: true });
     if (!this.cli()) {
+      if (process.platform !== 'win32') {
+        throw new Error('Voice dictation is currently only supported on Windows (no prebuilt Linux whisper.cpp binary).');
+      }
       progress('Finding the latest whisper.cpp build…');
       const releases = (await (await fetch(RELEASES, { headers: { Accept: 'application/vnd.github+json' } })).json()) as any[];
       const asset = releases.flatMap((r) => r.assets ?? []).find((a: any) => ASSET.test(a.name));

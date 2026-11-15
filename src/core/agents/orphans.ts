@@ -7,19 +7,49 @@ import { log } from '../log';
  */
 export function killTreesNow(pids: number[]): void {
   const live = pids.filter((p) => Number.isInteger(p) && p > 0);
-  if (!live.length || process.platform !== 'win32') return;
-  try {
-    execFileSync('taskkill', [...live.flatMap((p) => ['/pid', String(p)]), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10000 });
-  } catch {
-    /* some were already gone */
+  if (!live.length) return;
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', [...live.flatMap((p) => ['/pid', String(p)]), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10000 });
+    } catch {
+      /* some were already gone */
+    }
+    return;
+  }
+  for (const p of live) {
+    try {
+      process.kill(-p, 'SIGKILL');
+    } catch {
+      try {
+        process.kill(p, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
   }
 }
 
-interface Proc {
+export interface Proc {
   ProcessId: number;
   ParentProcessId: number;
   Name: string;
   CommandLine: string | null;
+}
+
+/** Parse `ps -eo pid=,ppid=,comm=,args=` output into process records (exported for tests). */
+export function parsePsOutput(out: string): Proc[] {
+  const procs: Proc[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line);
+    if (!m) continue;
+    procs.push({
+      ProcessId: Number(m[1]),
+      ParentProcessId: Number(m[2]),
+      Name: m[3],
+      CommandLine: m[4] || null,
+    });
+  }
+  return procs;
 }
 
 /**
@@ -29,31 +59,44 @@ interface Proc {
  * Agents of another open VS Code window still have their parent, so they're left alone.
  */
 export function killOrphans(dataDir: string): Promise<number> {
-  if (process.platform !== 'win32') return Promise.resolve(0);
-  const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress';
   return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 30000 }, (err, out) => {
-      if (err) return resolve(0);
-      let procs: Proc[] = [];
-      try {
-        procs = JSON.parse(out) as Proc[];
-      } catch {
-        return resolve(0);
-      }
+    const finish = (procs: Proc[]) => {
       const orphans = orphansIn(procs, dataDir, process.pid);
       if (orphans.length) {
         log('hot', 'stopping agents left running by an earlier session', { orphans: orphans.map((p) => ({ pid: p.ProcessId, name: p.Name })) });
         killTreesNow(orphans.map((p) => p.ProcessId));
       }
       resolve(orphans.length);
+    };
+
+    if (process.platform === 'win32') {
+      const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress';
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 30000 }, (err, out) => {
+        if (err) return resolve(0);
+        try {
+          finish(JSON.parse(out) as Proc[]);
+        } catch {
+          resolve(0);
+        }
+      });
+      return;
+    }
+
+    execFile('ps', ['-eo', 'pid=,ppid=,comm=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30000 }, (err, out) => {
+      if (err) return resolve(0);
+      finish(parsePsOutput(out));
     });
   });
 }
 
 /** The orphaned Super Agent processes among `procs` (exported for tests). Only the top of each orphaned tree. */
-export function orphansIn(procs: Proc[], dataDir: string, self: number): Proc[] {
+export function orphansIn(procs: Proc[], dataDir: string, self: number, caseInsensitive = process.platform === 'win32'): Proc[] {
   const alive = new Set(procs.map((p) => p.ProcessId));
-  const marker = dataDir.toLowerCase();
-  const ours = (p: Proc) => p.ProcessId !== self && !!p.CommandLine && p.CommandLine.toLowerCase().includes(marker) && /^(cmd|claude|codex|agy|node)\.exe$/i.test(p.Name);
-  return procs.filter((p) => ours(p) && !alive.has(p.ParentProcessId));
+  const marker = caseInsensitive ? dataDir.toLowerCase() : dataDir;
+  const ours = (p: Proc) => {
+    if (p.ProcessId === self || !p.CommandLine) return false;
+    const cmd = caseInsensitive ? p.CommandLine.toLowerCase() : p.CommandLine;
+    return cmd.includes(marker) && /^(cmd|sh|bash|claude|codex|agy|node)(\.exe)?$/i.test(p.Name);
+  };
+  return procs.filter((p) => ours(p) && (!alive.has(p.ParentProcessId) || (!caseInsensitive && p.ParentProcessId === 1)));
 }

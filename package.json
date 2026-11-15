@@ -2,7 +2,7 @@
   "name": "super-agent-touhid",
   "displayName": "Super Agent",
   "description": "Use all your coding agents (Codex, Claude Code, Antigravity) in one place as a multi-agent team, and control them from your phone too.",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "publisher": "touhidul-islam",
   "author": "Touhidul Islam",
   "license": "CC-BY-NC-4.0",
@@ -36,6 +36,7 @@
     "telegram"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": ["workspace"],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -120,10 +121,11 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "server": "node dist/server.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --dir tests",
-    "package": "node build.mjs && npx --yes @vscode/vsce package --no-dependencies --target win32-x64 && npx --yes @vscode/vsce package --no-dependencies --target win32-arm64",
-    "publish": "node build.mjs && npx --yes @vscode/vsce publish --no-dependencies --target win32-x64 win32-arm64"
+    "package": "node build.mjs && npx --yes @vscode/vsce package --no-dependencies --target win32-x64 && npx --yes @vscode/vsce package --no-dependencies --target win32-arm64 && npx --yes @vscode/vsce package --no-dependencies --target linux-x64",
+    "publish": "node build.mjs && npx --yes @vscode/vsce publish --no-dependencies --target win32-x64 win32-arm64 linux-x64"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",

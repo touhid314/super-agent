@@ -14,38 +14,45 @@ export const CLI_META: Record<AgentKind, { name: string; bin: string; npm: strin
 };
 
 /**
- * Each CLI's official Windows installer (a PowerShell script from its maker): no Node.js or npm needed, a per-user
+ * Each CLI's official platform installer: no Node.js or npm needed, a per-user
  * install (no admin), and the CLI then updates itself (`<cli> update`, see CliUpdater).
  */
 export const INSTALL_SCRIPT: Record<AgentKind, string> = {
-  codex: 'https://chatgpt.com/codex/install.ps1',
-  claude: 'https://claude.ai/install.ps1',
-  antigravity: 'https://antigravity.google/cli/install.ps1',
+  codex: `https://chatgpt.com/codex/install.${process.platform === 'win32' ? 'ps1' : 'sh'}`,
+  claude: `https://claude.ai/install.${process.platform === 'win32' ? 'ps1' : 'sh'}`,
+  antigravity: `https://antigravity.google/cli/install.${process.platform === 'win32' ? 'ps1' : 'sh'}`,
 };
 
 /** Shell command that installs a CLI. */
 export function installCommand(kind: AgentKind): string {
-  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${INSTALL_SCRIPT[kind]} | iex"`;
+  return process.platform === 'win32'
+    ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${INSTALL_SCRIPT[kind]} | iex"`
+    : `curl -fsSL ${INSTALL_SCRIPT[kind]} | bash`;
 }
 
 /**
  * Where the installers put each CLI. Checked directly: a CLI installed while VS Code runs isn't on its PATH until
  * VS Code restarts.
  */
-const EXTRA_LOCATIONS: Record<AgentKind, string[]> = {
+const unixLocations = (bin: string) => [path.join(os.homedir(), '.local', 'bin', bin), `/usr/local/bin/${bin}`, `/usr/bin/${bin}`, path.join(os.homedir(), '.npm-global', 'bin', bin)];
+const EXTRA_LOCATIONS: Record<AgentKind, string[]> = process.platform === 'win32' ? {
   codex: [path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe')],
   claude: [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
   antigravity: [path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'agy', 'bin', 'agy.exe')],
+} : {
+  codex: unixLocations('codex'),
+  claude: unixLocations('claude'),
+  antigravity: unixLocations('agy'),
 };
 
 export function resolveCli(kind: AgentKind, override?: string): CliInfo {
   const candidates: string[] = [];
   if (override) candidates.push(override);
   try {
-    const out = execFileSync('where.exe', [CLI_META[kind].bin], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [...(process.platform === 'win32' ? [] : ['-a']), CLI_META[kind].bin], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     const found = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     // Prefer launchers cmd.exe can run directly.
-    candidates.push(...found.filter((f) => /\.(exe|cmd|bat)$/i.test(f)));
+    candidates.push(...found.filter((f) => process.platform !== 'win32' || /\.(exe|cmd|bat)$/i.test(f)));
   } catch {
     /* not on PATH */
   }
@@ -54,12 +61,12 @@ export function resolveCli(kind: AgentKind, override?: string): CliInfo {
   let version: string | undefined;
   if (hit) {
     try {
-      version = execFileSync(quote(hit) + ' --version', {
+      version = (process.platform === 'win32' ? execFileSync(quote(hit) + ' --version', {
         encoding: 'utf8',
         shell: 'cmd.exe',
         windowsHide: true,
         timeout: 20000,
-      })
+      }) : execFileSync(hit, ['--version'], { encoding: 'utf8', timeout: 20000 }))
         .trim()
         .split(/\r?\n/)
         .pop();
@@ -117,6 +124,13 @@ export const PLAYWRIGHT_MCP = '@playwright/mcp@0.0.83';
  * Isolated (in-memory profile) and headless, so several agents can browse at once without clashing.
  */
 export function browserServer(outputDir?: string): { command: string; args: string[] } {
+  if (process.platform !== 'win32') {
+    const chrome = ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'].find((p) => fs.existsSync(p));
+    return {
+      command: 'npx',
+      args: ['-y', PLAYWRIGHT_MCP, '--isolated', '--headless', ...(chrome ? ['--executable-path', chrome] : []), ...(outputDir ? ['--output-dir', outputDir] : [])],
+    };
+  }
   const programs = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean) as string[];
   const chrome = programs.some((p) => fs.existsSync(path.join(p, 'Google', 'Chrome', 'Application', 'chrome.exe')));
   return {
@@ -216,6 +230,7 @@ export function loginArgs(kind: AgentKind): string[] {
 }
 
 export function quote(arg: string): string {
+  if (process.platform !== 'win32') return `'${arg.replace(/'/g, `'"'"'`)}'`;
   return /[\s"&|<>^()*%!,;=]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
 }
 

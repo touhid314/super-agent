@@ -244,7 +244,7 @@ function renewClaudeLogin(acc: Account): Promise<void> {
   const args = ['-p', 'Reply with OK.', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config', '--tools', ''];
   return new Promise((resolve) => {
     // claude.exe takes the empty `--tools` argument directly; an npm .cmd shim needs a shell (and quoting).
-    const direct = /\.exe$/i.test(cli);
+    const direct = process.platform !== 'win32' || /\.exe$/i.test(cli);
     const file = direct ? cli : `${commandLine(cli, args.slice(0, -1))} ""`;
     execFile(file, direct ? args : [], { shell: !direct, cwd: os.tmpdir(), env: accountEnv(acc), timeout: 60000, windowsHide: true }, (err) => {
       const why = err ? ` (${err.message.split('\n')[0]})` : '';

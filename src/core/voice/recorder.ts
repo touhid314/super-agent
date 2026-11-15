@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { PvRecorder } from '@picovoice/pvrecorder-node';
+import type { PvRecorder } from '@picovoice/pvrecorder-node';
 
 /** Longest dictation kept (then it stops by itself). */
 const MAX_SECONDS = 5 * 60;
@@ -21,6 +21,8 @@ export class MicRecorder {
   /** `onLevel`: loudness 0–1 about ten times a second (for the mic animation); `onLimit`: hit the length cap. */
   start(onLevel: (level: number) => void, onLimit: () => void): void {
     if (this.rec) return;
+    // Load the native microphone library only when recording is requested.
+    const { PvRecorder } = require('@picovoice/pvrecorder-node') as typeof import('@picovoice/pvrecorder-node');
     const rec = new PvRecorder(512); // default input device
     rec.start();
     this.rec = rec;

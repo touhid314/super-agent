@@ -1,0 +1,33 @@
+# Super Agent headless server — systemd user unit template
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user ~/.config/super-agent
+#   cp deploy/super-agent.service ~/.config/systemd/user/super-agent.service
+#   # Create ~/.config/super-agent/server.env with chmod 600 containing:
+#   #   SUPER_AGENT_TELEGRAM_TOKEN=123456789:AAH...
+#   # Edit WorkingDirectory and ExecStart below to match your repo and project paths.
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now super-agent.service
+#   sudo loginctl enable-linger "$USER"
+
+[Unit]
+Description=Super Agent Headless Server (Telegram Relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/super-agent
+Environment=NODE_ENV=production
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/super-agent/server.env
+ExecStart=/usr/bin/node /path/to/super-agent/dist/server.cjs --workspace /abs/project
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

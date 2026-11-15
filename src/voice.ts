@@ -53,6 +53,10 @@ export function createVoice(o: { dataDir: string; model: () => string; cwd: () =
   }
 
   async function start(): Promise<void> {
+    if (process.platform !== 'win32' || vscode.env.remoteName) {
+      void vscode.window.showInformationMessage('Microphone dictation is available in local Windows workspaces. Type your message to use the team on a remote server.');
+      return;
+    }
     if (mic.recording) return;
     if (!(await install())) return;
     try {

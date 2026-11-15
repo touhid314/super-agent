@@ -18,10 +18,12 @@
 
 ## Getting started
 
-1. Install [**Super Agent** from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid) (Windows 10/11).
+1. Install [**Super Agent** from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid) on Windows 10/11 or Linux x64. For Remote SSH, install it on the Linux host.
 2. On first start it offers to install the agent CLIs you don't have yet (**Codex**, **Claude Code**, **Antigravity**) with each maker's official installer. No admin rights or Node.js needed.
 3. Open the Super Agent panel in the Activity Bar, click **+** to add an account and sign in. Add as many accounts as you have.
 4. Open a folder and ask the team for anything.
+
+For an **always-on Linux server controlled from your phone**, use the [standalone server and systemd setup](docs/linux-server.md). It keeps running independently of VS Code and relays messages, progress, and permission requests through Telegram. Microphone dictation is available in local Windows workspaces.
 
 ## Why Super Agent
 

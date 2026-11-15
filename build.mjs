@@ -5,6 +5,7 @@ import fs from 'node:fs';
 // The mic recorder's native library: it loads from ../lib next to the bundled extension (dist/).
 fs.rmSync('lib', { recursive: true, force: true });
 fs.cpSync('node_modules/@picovoice/pvrecorder-node/lib/windows', 'lib/windows', { recursive: true });
+fs.cpSync('node_modules/@picovoice/pvrecorder-node/lib/linux/x86_64', 'lib/linux/x86_64', { recursive: true });
 
 await build({
   entryPoints: ['src/extension.ts'],
@@ -31,4 +32,15 @@ await build({
   logLevel: 'warning',
 });
 
-console.log('built dist/extension.js and media/webview.js');
+await build({
+  entryPoints: ['src/server.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node22',
+  outfile: 'dist/server.cjs',
+  sourcemap: true,
+  logLevel: 'warning',
+});
+
+console.log('built dist/extension.js, dist/server.cjs and media/webview.js');

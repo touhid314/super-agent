@@ -3,9 +3,11 @@ import { installClis } from '../src/core/agents/installer';
 import { INSTALL_SCRIPT, installCommand } from '../src/core/agents/cli';
 
 describe('installClis', () => {
-  it("uses each maker's own PowerShell installer (no npm)", () => {
-    expect(installCommand('codex')).toBe(`powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${INSTALL_SCRIPT.codex} | iex"`);
-    expect(Object.values(INSTALL_SCRIPT)).toEqual(['https://chatgpt.com/codex/install.ps1', 'https://claude.ai/install.ps1', 'https://antigravity.google/cli/install.ps1']);
+  it("uses each maker's installer for the host platform", () => {
+    const windows = process.platform === 'win32';
+    expect(installCommand('codex')).toBe(windows ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${INSTALL_SCRIPT.codex} | iex"` : `curl -fsSL ${INSTALL_SCRIPT.codex} | bash`);
+    const extension = windows ? 'ps1' : 'sh';
+    expect(Object.values(INSTALL_SCRIPT)).toEqual([`https://chatgpt.com/codex/install.${extension}`, `https://claude.ai/install.${extension}`, `https://antigravity.google/cli/install.${extension}`]);
   });
 
   it('judges by whether the CLI can be found afterwards, and keeps the error that explains a failure', async () => {

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AccountPool } from '../src/core/agents/pool';
 import type { RunRequest } from '../src/core/agents/runner';
 import type { Account } from '../src/core/types';
@@ -12,8 +12,8 @@ const acc = (id: string): Account => ({ id, kind: 'claude', label: id, home: nul
 
 /** A tiny stand-in for the Telegram Bot API. */
 function fakeTelegram() {
-  const inbox: { update_id: number; message: unknown }[] = [];
-  const sent: { chat: number; text: string }[] = [];
+  const inbox: { update_id: number; message?: unknown; callback_query?: unknown }[] = [];
+  const sent: { chat: number; text: string; markup?: { inline_keyboard: { callback_data: string }[][] } }[] = [];
   /** Texts sent without a notification. */
   const quiet: string[] = [];
   let id = 1;
@@ -26,14 +26,15 @@ function fakeTelegram() {
       return ok(inbox.splice(0).filter((u) => u.update_id >= (body.offset ?? 0)));
     }
     if (method === 'sendMessage') {
-      sent.push({ chat: body.chat_id, text: body.text });
+      sent.push({ chat: body.chat_id, text: body.text, markup: body.reply_markup });
       if (body.disable_notification) quiet.push(body.text);
       return ok({ message_id: sent.length });
     }
     return ok(true);
   }) as typeof globalThis.fetch;
   const say = (chat: number, text: string) => inbox.push({ update_id: id++, message: { chat: { id: chat }, text } });
-  return { fetch, sent, quiet, say };
+  const tap = (chat: number, data: string) => inbox.push({ update_id: id++, callback_query: { id: String(id), data, message: { message_id: 1, chat: { id: chat } } } });
+  return { fetch, sent, quiet, say, tap };
 }
 
 function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Promise<void>) {
@@ -80,6 +81,40 @@ function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Pr
 }
 
 describe('Telegram relay', () => {
+  it('answers permissions only from the paired chat and rejects stale or repeated buttons', async () => {
+    const h = setup();
+    try {
+      h.relay.start('123:token');
+      h.tg.say(7, `/start ${h.relay.pairCode}`);
+      await h.until(() => h.relay.state === 'on');
+      const t = h.engine.send(undefined, 'prepare project', h.dir);
+      await h.until(() => t.status === 'idle');
+      await h.relay.onPanelMessage(t, 'prepare project', []);
+      const answer = vi.spyOn(h.engine, 'answerApproval');
+      t.approval = { id: 'ask-1', at: Date.now(), kind: 'command', command: 'git push' };
+      await h.relay.onApproval(t);
+      const button = h.tg.sent.at(-1)!.markup!.inline_keyboard[0][0].callback_data;
+      expect(Buffer.byteLength(button)).toBeLessThanOrEqual(64);
+      h.tg.tap(99, button);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(answer).not.toHaveBeenCalled();
+      h.tg.tap(7, button);
+      await h.until(() => answer.mock.calls.length === 1);
+      expect(answer).toHaveBeenCalledWith(t.id, 'ask-1', 'accept');
+      h.tg.tap(7, button);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(answer).toHaveBeenCalledTimes(1);
+      await h.relay.onApproval(t);
+      const stale = h.tg.sent.at(-1)!.markup!.inline_keyboard[0][1].callback_data;
+      t.approval = undefined;
+      h.tg.tap(7, stale);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(answer).toHaveBeenCalledTimes(1);
+    } finally {
+      h.relay.stop();
+      h.engine.dispose();
+    }
+  });
   it('pairs only with the code, refuses strangers, and relays messages and replies', async () => {
     const h = setup();
     h.relay.start('123:token');

@@ -11,4 +11,5 @@ trash/**
 code
 .gitignore
 docs/**
+!docs/linux-server.md
 evaluation/**

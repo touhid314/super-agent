@@ -127,7 +127,10 @@ function probe<T>(child: ChildProcess, start: (write: (m: object) => void) => vo
 
 /** Claude Code lists every command it can run headless (built-ins, the user's commands, skills, plugins) on `initialize`. */
 function claudeCommands(account: Account, cliPath: string, cwd: string): Promise<SlashCommand[]> {
-  const child = spawn(commandLine(cliPath, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']), { cwd, env: accountEnv(account), shell: true, windowsHide: true });
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
+  const child = process.platform === 'win32'
+    ? spawn(commandLine(cliPath, args), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
+    : spawn(cliPath, args, { cwd, env: accountEnv(account), detached: true });
   return probe(
     child,
     (write) => write({ type: 'control_request', request_id: 'commands', request: { subtype: 'initialize' } }),
@@ -141,7 +144,7 @@ function claudeCommands(account: Account, cliPath: string, cwd: string): Promise
 
 /** Antigravity announces its commands (built-ins and skills) to an ACP client when a session starts. */
 function agyCommands(account: Account, cliPath: string, cwd: string): Promise<SlashCommand[]> {
-  const child = spawn(cliPath, ['acp'], { cwd, env: accountEnv(account), windowsHide: true });
+  const child = spawn(cliPath, ['acp'], { cwd, env: accountEnv(account), windowsHide: true, detached: process.platform !== 'win32' });
   let sessionId: string | undefined;
   return probe(
     child,
@@ -160,7 +163,9 @@ function agyCommands(account: Account, cliPath: string, cwd: string): Promise<Sl
 
 /** Codex: its built-ins that work headless, its skills (from its app-server) and the user's custom prompts. */
 async function codexCommands(account: Account, cliPath: string, cwd: string): Promise<SlashCommand[]> {
-  const child = spawn(commandLine(cliPath, ['app-server']), { cwd, env: accountEnv(account), shell: true, windowsHide: true });
+  const child = process.platform === 'win32'
+    ? spawn(commandLine(cliPath, ['app-server']), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
+    : spawn(cliPath, ['app-server'], { cwd, env: accountEnv(account), detached: true });
   const skills = await probe<SlashCommand[]>(
     child,
     (write) => write({ id: 1, method: 'initialize', params: { clientInfo: { name: 'super-agent', version: '1' }, capabilities: null } }),

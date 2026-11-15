@@ -356,9 +356,10 @@ export class HotAgents {
     const args = buildArgs({ kind: account.kind, mode, autonomy, cwd, model: account.model, effort: account.effort, lastMessageFile: '', resume, newSessionId, browser: b, dirs: [projectDir(cwd)] });
     // Standard: what its permission mode doesn't allow (e.g. editing outside the folder) is asked of us, and we ask you.
     const ask = mode === 'write' && autonomy === 'standard' ? ['--permission-prompt-tool', 'stdio'] : [];
-    const child = claude
-      ? spawn(commandLine(cliPath, ['--input-format', 'stream-json', '--replay-user-messages', ...ask, ...args]), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
-      : spawn(cliPath, [...args, '--input-format', 'stream-json', '-p='], { cwd, env: accountEnv(account), windowsHide: true });
+    const streamArgs = claude ? ['--input-format', 'stream-json', '--replay-user-messages', ...ask, ...args] : [...args, '--input-format', 'stream-json', '-p='];
+    const child = process.platform === 'win32' && claude
+      ? spawn(commandLine(cliPath, streamArgs), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
+      : spawn(cliPath, streamArgs, { cwd, env: accountEnv(account), windowsHide: true, detached: process.platform !== 'win32' });
     const p: StreamProc = { account, cwd, key: sig(mode, autonomy, account, browser), child, sessionId: resume ?? newSessionId, spare: false, startedAt: Date.now(), lastUsed: Date.now(), buf: '', dead: false };
     this.streams.push(p);
     log('hot', `spawn ${account.kind} for ${account.label}${resume ? ' (resume)' : newSessionId ? ' (new session)' : ''}`, { pid: child.pid, cwd });
@@ -466,7 +467,9 @@ export class HotAgents {
     if (existing && !existing.dead) return existing;
     // The model is chosen per thread (thread/start), so one server serves any model the account switches to.
     const extra = browser ? codexBrowser(path.join(projectDir(cwd), 'screenshots')) : [];
-    const child = spawn(commandLine(cliPath, ['app-server', ...extra]), { cwd, env: accountEnv(account), shell: true, windowsHide: true });
+    const child = process.platform === 'win32'
+      ? spawn(commandLine(cliPath, ['app-server', ...extra]), { cwd, env: accountEnv(account), shell: true, windowsHide: true })
+      : spawn(cliPath, ['app-server', ...extra], { cwd, env: accountEnv(account), detached: true });
     const s: CodexServer = { account, cwd, key, child, ready: Promise.resolve(false), calls: new Map(), nextId: 0, loaded: new Set(), turns: new Map(), buf: '', dead: false };
     this.servers.set(key, s);
     child.stdout?.on('data', (d: Buffer) => {

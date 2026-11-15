@@ -103,7 +103,23 @@ export function cancelAll(): void {
 }
 
 export function killTree(pid: number): void {
-  execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined);
+  if (process.platform === 'win32') {
+    execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined);
+    return;
+  }
+  const send = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig);
+    } catch {
+      try {
+        process.kill(pid, sig);
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+  send('SIGTERM');
+  setTimeout(() => send('SIGKILL'), 2000).unref();
 }
 
 /** Run one headless agent turn. The prompt goes in on stdin; output is streamed, logged and returned. */
@@ -146,9 +162,12 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
   }
 
   return new Promise((resolve) => {
-    const child = agy
-      ? spawn(req.cliPath, [...args, '-p', agyPrompt], { cwd: req.cwd, env: accountEnv(req.account), windowsHide: true })
-      : spawn(commandLine(req.cliPath, args), { cwd: req.cwd, env: accountEnv(req.account), shell: true, windowsHide: true });
+    const child =
+      process.platform !== 'win32'
+        ? spawn(req.cliPath, agy ? [...args, '-p', agyPrompt] : args, { cwd: req.cwd, env: accountEnv(req.account), detached: true, windowsHide: true })
+        : agy
+          ? spawn(req.cliPath, [...args, '-p', agyPrompt], { cwd: req.cwd, env: accountEnv(req.account), windowsHide: true })
+          : spawn(commandLine(req.cliPath, args), { cwd: req.cwd, env: accountEnv(req.account), shell: true, windowsHide: true });
     const entry = { child, cancelled: false };
     active.set(req.runId, entry);
 

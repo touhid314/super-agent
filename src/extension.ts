@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { AccountService } from './core/agents/accounts';
-import { CLI_META, ensureAgyBrowser } from './core/agents/cli';
+import { CLI_META, ensureAgyBrowser, quote } from './core/agents/cli';
 import { AccountPool } from './core/agents/pool';
 import { HotAgents, askSummary } from './core/agents/hot';
 import { killOrphans } from './core/agents/orphans';
@@ -42,9 +42,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // Sign-in / install happen in a VS Code terminal with only this account's variables set.
     const extra: Record<string, string> = {};
     for (const [k, v] of Object.entries(env)) if (v !== undefined && process.env[k] !== v) extra[k] = v;
-    const term = vscode.window.createTerminal({ name: title, env: extra, shellPath: 'cmd.exe' });
+    const win = process.platform === 'win32';
+    const term = vscode.window.createTerminal({ name: title, env: extra, shellPath: win ? 'cmd.exe' : '/bin/bash' });
     term.show();
-    term.sendText(`echo ${hint.replace(/[&|<>^]/g, '')} & ${command}`);
+    term.sendText(win ? `echo ${hint.replace(/[&|<>^]/g, '')} & ${command}` : `printf '%s\\n' ${quote(hint)}; ${command}`);
   });
   accounts.refreshClis();
   accounts.bootstrap();
@@ -272,6 +273,7 @@ export function activate(context: vscode.ExtensionContext): void {
   function onApproval(t: Thread): void {
     const a = t.approval;
     if (!a) return;
+    void telegram?.onApproval(t).catch((e) => log.appendLine(`Telegram: ${e.message}`));
     if (config.settings.soundOnDone) post({ type: 'chime', kind: 'task' });
     if (view?.visible) return;
     const who = t.leadId ? modelName(t.leadId) : 'An agent';

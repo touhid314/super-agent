@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Engine } from './engine/engine';
@@ -108,6 +108,7 @@ export class TelegramRelay {
   private typing?: ReturnType<typeof setInterval>;
   /** Files picked in the explorer ("Ask about it"), attached to the next message. */
   private pendingFiles: string[] = [];
+  private approvals = new Map<string, { thread: string; ask: string }>();
   readonly files: FileBrowser;
   readonly team: TeamPanel;
   /** Live "… is working" status message per running thread. */
@@ -263,6 +264,24 @@ export class TelegramRelay {
 
   // ------------------------------------------------------------ polling
 
+  /** Permission requests can be answered from the paired phone. */
+  async onApproval(t: Thread): Promise<void> {
+    if (!this.live || !t.approval || !this.isTracked(t)) return;
+    const ask = t.approval;
+    for (const [key, pending] of this.approvals) {
+      if (pending.thread === t.id || this.d.engine.get(pending.thread)?.approval?.id !== pending.ask) this.approvals.delete(key);
+    }
+    const key = randomBytes(12).toString('hex');
+    this.approvals.set(key, { thread: t.id, ask: ask.id });
+    const details = [ask.command || ask.tool || ask.kind, ...(ask.paths ?? []), ...(ask.network ? ['Network access'] : []), ask.reason].filter(Boolean).join('\n');
+    await this.reply(this.chatId!, `Permission requested: ${t.title}\n\n${details.slice(0, 3000)}`, {
+      inline_keyboard: [[
+        { text: 'Allow once', callback_data: `ap:y:${key}` },
+        { text: 'Deny', callback_data: `ap:n:${key}` },
+      ]],
+    });
+  }
+
   private async poll(signal: AbortSignal): Promise<void> {
     let wait = 1000;
     while (!signal.aborted) {
@@ -309,6 +328,17 @@ export class TelegramRelay {
       return;
     }
     const id = q.message!.message_id;
+    const approval = /^ap:([yn]):([a-f0-9]{24})$/.exec(q.data ?? '');
+    if (approval) {
+      const pending = this.approvals.get(approval[2]);
+      const current = pending && this.d.engine.get(pending.thread)?.approval;
+      const valid = pending && current?.id === pending.ask;
+      this.approvals.delete(approval[2]);
+      if (valid) this.d.engine.answerApproval(pending.thread, pending.ask, approval[1] === 'y' ? 'accept' : 'decline');
+      await this.api('answerCallbackQuery', { callback_query_id: q.id, text: valid ? 'Answered.' : 'This request has expired.' }).catch(() => undefined);
+      await this.api('editMessageReplyMarkup', { chat_id: chat, message_id: id, reply_markup: { inline_keyboard: [] } }).catch(() => undefined);
+      return;
+    }
     const stop = /^pg:stop:(.+)$/.exec(q.data ?? '');
     if (stop) {
       this.d.engine.stop(stop[1]);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { Account, AgentKind, CliInfo, LoginState } from '../types';
 import type { ConfigStore } from '../store/config';
 import { newId, paths, readJson } from '../store/paths';
-import { CLI_META, commandLine, installCommand, loginArgs, resolveCli, accountEnv } from './cli';
+import { CLI_META, commandLine, installCommand, loginArgs, resolveCli, accountEnv, quote } from './cli';
 import type { AccountPool } from './pool';
 import { runAgent } from './runner';
 
@@ -37,7 +37,7 @@ export class AccountService {
 
   add(kind: AgentKind, label: string): Account {
     if (kind === 'antigravity' && this.config.accounts.some((a) => a.kind === 'antigravity')) {
-      throw new Error('Antigravity keeps one Google login per PC (in Windows Credential Manager), so only one Antigravity account can be on the team. To use a different Google account, click Re-login on it and switch with /logout and /login.');
+      throw new Error('Antigravity keeps one Google login per machine, so only one Antigravity account can be on the team. To use a different Google account, click Re-login on it and switch with /logout and /login.');
     }
     const id = newId();
     const home = kind === 'antigravity' ? null : paths.accountHome(id);
@@ -223,6 +223,12 @@ function labelFor(kind: AgentKind, email: string | undefined, fallback: string):
 export type ConsoleOpener = (title: string, hint: string, command: string, env: NodeJS.ProcessEnv, closeOnExit: boolean) => void;
 
 function openConsole(title: string, hint: string, command: string, env: NodeJS.ProcessEnv, closeOnExit: boolean): void {
+  if (process.platform !== 'win32') {
+    // A headless terminal must keep stdin/stdout for interactive login prompts.
+    const inner = `printf '%s\\n\\n' ${quote(hint)}; ${command}`;
+    spawn('bash', ['-c', inner], { env, stdio: 'inherit' });
+    return;
+  }
   const safe = (s: string) => s.replace(/[&|<>^"]/g, '');
   const inner = `title ${safe(title)} & echo. & echo   ${safe(hint)} & echo. & ${command}${closeOnExit ? ' & timeout /t 4' : ''}`;
   spawn('cmd.exe', ['/d', '/c', `start "${safe(title)}" cmd.exe ${closeOnExit ? '/c' : '/k'} "${inner}"`], {
@@ -245,7 +251,7 @@ function prepareCodexHome(home: string): void {
   const target = fs.existsSync(shared) ? fs.realpathSync(shared) : path.join(paths.data, 'codex-sandbox-secrets');
   fs.mkdirSync(target, { recursive: true });
   try {
-    fs.symlinkSync(target, path.join(home, '.sandbox-secrets'), 'junction');
+    fs.symlinkSync(target, path.join(home, '.sandbox-secrets'), process.platform === 'win32' ? 'junction' : 'dir');
   } catch {
     /* non-fatal: Codex will ask for sandbox setup once */
   }

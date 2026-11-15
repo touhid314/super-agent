@@ -115,9 +115,19 @@ export async function startServer(options: { workspace: string; token: string },
       const a = config.account(id ?? '');
       return a ? modelInfo(a, models[a.id] ?? []).name : 'Agent';
     };
+    // Keep a ready process per team member, as the extension does: otherwise each new conversation pays the CLI's
+    // cold start (and the browser MCP's npx start), which takes many seconds on a server.
+    const warmTeam = () => {
+      if (config.settings.hotAgents === false) return;
+      const team = config.accounts.filter((a) => a.role !== 'off' && pool.get(a.id).login !== 'signed-out').flatMap((account) => {
+        const cliPath = accounts.cliPath(account.kind);
+        return cliPath ? [{ account, cliPath }] : [];
+      });
+      hot.warm(team, { cwd: options.workspace, autonomy: config.settings.autonomy, browser: true });
+    };
     const updater = new CliUpdater((k) => accounts.cliPath(k), {
       before: (k) => hot.pause(k),
-      after: (k) => { accounts.refreshClis(); hot.resume(k); },
+      after: (k) => { accounts.refreshClis(); hot.resume(k); warmTeam(); },
     });
     engine = new Engine({
       config, pool, dataDir: dir, changes: new ChangeTracker(dir),
@@ -136,7 +146,7 @@ export async function startServer(options: { workspace: string; token: string },
     const eng = engine;
     hot.onWake = (w) => void eng.wake(w.account.id, w.sessionId);
     hot.onBackground = (b) => eng.backgroundTasks(b.account.id, b.sessionId, b.tasks);
-    const changed = () => eng.teamChanged();
+    const changed = () => { warmTeam(); eng.teamChanged(); };
     unsubscribe = pool.onChange(changed);
     const store = new FileStore(path.join(dir, 'telegram.json'));
     relay = new TelegramRelay({
@@ -182,9 +192,11 @@ export async function startServer(options: { workspace: string; token: string },
     console.log(`Telegram: @${bot}`);
     if (relay.pairCode) console.log(`Pair your phone: https://t.me/${bot}?start=${relay.pairCode}`);
     else console.log('Telegram is already paired.');
+    warmTeam();
     void usage.refreshAll().catch(() => log('server', 'Usage refresh failed.'));
     timer = setInterval(() => {
       accounts.refreshAll();
+      warmTeam();
       void usage.refreshAll().catch(() => log('server', 'Usage refresh failed.'));
     }, 5 * 60000);
     const agy = accounts.cliPath('antigravity');

@@ -40,3 +40,14 @@ describe('projectDir', () => {
     expect(projectDir(path.resolve('Work', 'Other'), data)).not.toBe(a);
   });
 });
+
+describe('browserCommand', () => {
+  it('opens web links with the OS opener, the URL as a single argument', async () => {
+    const { browserCommand } = await import('../src/links');
+    expect(browserCommand('https://arxiv.org/abs/2409.07431', 'win32')).toEqual(['rundll32.exe', ['url.dll,FileProtocolHandler', 'https://arxiv.org/abs/2409.07431']]);
+    expect(browserCommand('http://x.org/a?b=1&c=2', 'linux')).toEqual(['xdg-open', ['http://x.org/a?b=1&c=2']]);
+    expect(browserCommand('https://x.org', 'darwin')).toEqual(['open', ['https://x.org']]);
+    expect(browserCommand('file:///etc/passwd', 'win32')).toBeUndefined();
+    expect(browserCommand('https://x.org/" & calc', 'win32')).toBeUndefined();
+  });
+});

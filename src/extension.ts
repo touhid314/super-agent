@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { createTranscriber } from './core/voice/audio';
 import path from 'node:path';
@@ -19,7 +20,7 @@ import { CliUpdater } from './core/agents/updater';
 import { Engine } from './engine/engine';
 import { FileStore, TelegramRelay, uniqueIn } from './telegram';
 import { configureLog, log as trace } from './core/log';
-import { fileTarget } from './links';
+import { browserCommand, fileTarget } from './links';
 import { createVoice } from './voice';
 import { listModels, modelInfo, type ModelOption } from './engine/models';
 import type { Thread } from './engine/types';
@@ -789,8 +790,10 @@ export function activate(context: vscode.ExtensionContext): void {
         return void forgetTelegram();
       case 'openLink': {
         if (typeof m.url !== 'string') return;
-        // Web links (Telegram setup, links in answers): VS Code asks before opening an untrusted domain.
-        if (/^https?:\/\/\S+$/i.test(m.url)) return void vscode.env.openExternal(vscode.Uri.parse(m.url));
+        // Web links (Telegram setup, links in answers) open in the browser right away. VS Code's openExternal asks
+        // "Do you want Code to open the external website?" for untrusted domains, so it's only the fallback: on a
+        // remote host (the browser is on the user's machine, which only VS Code can reach) or if the OS opener fails.
+        if (/^https?:\/\/\S+$/i.test(m.url)) return openInBrowser(m.url);
         // File links in answers: open existing files in the editor, at the cited lines; reveal folders.
         const t = fileTarget(m.url, cwd());
         if (!t || !fs.existsSync(t.file)) return;
@@ -915,4 +918,18 @@ function html(webview: vscode.Webview, root: vscode.Uri): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:;">
 <link rel="stylesheet" href="${css}"></head><body><div id="root"></div><script nonce="${nonce}" src="${js}"></script></body></html>`;
+}
+
+/** A web link, in the default browser: directly on this machine, through VS Code when the extension runs remotely. */
+function openInBrowser(url: string): void {
+  const viaVsCode = () => void vscode.env.openExternal(vscode.Uri.parse(url));
+  const cmd = vscode.env.remoteName ? undefined : browserCommand(url);
+  if (!cmd) return viaVsCode();
+  try {
+    const child = spawn(cmd[0], cmd[1], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.once('error', viaVsCode);
+    child.unref();
+  } catch {
+    viaVsCode();
+  }
 }

@@ -38,3 +38,16 @@ export function fileTarget(href: string, base?: string): FileTarget | undefined 
   }
   return { file: path.normalize(s), line, endLine };
 }
+
+/**
+ * How to open a web link in the default browser of this machine, without a shell (the URL is one argument, so it
+ * can't inject commands). VS Code's own openExternal asks "Do you want Code to open the external website?" for every
+ * domain not on its trusted list; this goes straight to the browser.
+ */
+export function browserCommand(url: string, platform: NodeJS.Platform = process.platform): [string, string[]] | undefined {
+  if (!/^https?:\/\/[^\s"]+$/i.test(url)) return undefined;
+  if (platform === 'win32') return ['rundll32.exe', ['url.dll,FileProtocolHandler', url]];
+  if (platform === 'darwin') return ['open', [url]];
+  if (platform === 'linux') return ['xdg-open', [url]];
+  return undefined;
+}

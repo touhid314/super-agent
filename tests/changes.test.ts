@@ -98,3 +98,30 @@ describe('ChangeTracker', () => {
     expect(String(await tracker.before(ws, c, 'sub/d.txt'))).toBe('x\n');
   }, 30000);
 });
+
+describe('ChangeTracker on a workspace too big to snapshot', () => {
+  it('skips tracking at once (no git copy), and remembers it across restarts', async () => {
+    const { root, ws } = setup();
+    for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(ws, `f${i}.txt`), 'x');
+    const data = path.join(root, 'data');
+    const tracker = new ChangeTracker(data, { files: 10, bytes: 1e9, ms: 3000 });
+    const t0 = Date.now();
+    expect(await tracker.snapshot(ws)).toBeUndefined();
+    expect(Date.now() - t0).toBeLessThan(2000);
+    const store = fs.readdirSync(path.join(data, 'snapshots'));
+    expect(store.filter((n) => n.endsWith('.skip'))).toHaveLength(1);
+    expect(store.filter((n) => !n.endsWith('.skip'))).toHaveLength(0); // nothing copied
+    // A new process (VS Code reload) doesn't try again either, even with generous limits.
+    expect(await new ChangeTracker(data).snapshot(ws)).toBeUndefined();
+  }, 30000);
+
+  it('counts bytes too, and only what git would take in a repo (its .gitignore applies)', async () => {
+    const { root, ws } = setup();
+    fs.writeFileSync(path.join(ws, 'big.bin'), Buffer.alloc(3000));
+    expect(await new ChangeTracker(path.join(root, 'd1'), { files: 1000, bytes: 2000, ms: 3000 }).snapshot(ws)).toBeUndefined();
+    const repo = setup();
+    require('node:child_process').execFileSync('git', ['init', '-q'], { cwd: repo.ws });
+    fs.writeFileSync(path.join(repo.ws, 'data.log'), Buffer.alloc(3000)); // *.log is ignored by the repo
+    expect(await new ChangeTracker(path.join(repo.root, 'd2'), { files: 1000, bytes: 2000, ms: 3000 }).snapshot(repo.ws)).toBeTruthy();
+  }, 30000);
+});

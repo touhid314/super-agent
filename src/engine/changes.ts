@@ -14,6 +14,15 @@ export const UNDO_TURNS = 3;
 /** A turn's starting snapshot that never got its end (extension closed mid-turn) is dropped after this long. */
 const PENDING_MAX_MS = 24 * 3600 * 1000;
 const PENDING = 'refs/sa/pending/';
+/** A workspace found too big to track is not tried again for this long (it rarely shrinks). */
+const SKIP_MS = 24 * 3600 * 1000;
+/**
+ * Before the first snapshot of a workspace: if it has more files or bytes than this (or merely counting takes longer),
+ * change tracking is off for it. A snapshot copies every file into the store, so a huge workspace (a home folder, a
+ * dataset drive) would delay every turn by the whole timeout and fill the disk with partial copies.
+ */
+export const TRACK_LIMITS = { files: 100_000, bytes: 1024 ** 3, ms: 3000 };
+const SKIP_DIRS = new Set(EXCLUDE.filter((e) => e.endsWith('/')).map((e) => e.slice(0, -1)));
 const TURNS = 'refs/sa/turns/';
 
 /**
@@ -29,7 +38,13 @@ export class ChangeTracker {
   /** One git command at a time per workspace (they share an index). */
   private locks = new Map<string, Promise<unknown>>();
 
-  constructor(private dataDir: string) {}
+  /** Workspaces not tracked (too big, or snapshots failed), until when. */
+  private skip = new Map<string, number>();
+
+  constructor(
+    private dataDir: string,
+    private limits = TRACK_LIMITS,
+  ) {}
 
   /** A turn is starting: the workspace's current files, as a tree id; undefined if it can't be taken (no git, too big, …). */
   snapshot(cwd: string): Promise<string | undefined> {
@@ -98,14 +113,111 @@ export class ChangeTracker {
   }
 
   private async take(cwd: string): Promise<string | undefined> {
+    if (this.skipped(cwd)) return undefined;
     try {
+      // The first snapshot copies everything; later ones only what changed. So size up a workspace until one worked
+      // (a store left by snapshots that never finished, from before this check, is sized up and cleared too).
+      const ok = path.join(this.gitDir(cwd), 'sa-ok');
+      if (!fs.existsSync(ok)) {
+        const tooBig = await this.tooBig(cwd);
+        if (tooBig) {
+          this.markSkip(cwd, tooBig);
+          return undefined;
+        }
+      }
       await this.init(cwd);
       await this.git(cwd, ['add', '-A', '--ignore-errors'], SNAPSHOT_TIMEOUT_MS);
-      return (await this.git(cwd, ['write-tree'])).trim();
+      const tree = (await this.git(cwd, ['write-tree'])).trim();
+      if (!fs.existsSync(ok)) fs.writeFileSync(ok, '');
+      return tree;
     } catch (err) {
-      log('changes', `snapshot failed in ${cwd}: ${(err as Error).message.split('\n')[0]}`);
+      // Not retried every turn: a failing snapshot (usually the timeout) would delay each turn just the same.
+      this.markSkip(cwd, `snapshot failed: ${(err as Error).message.split('\n')[0]}`);
       return undefined;
     }
+  }
+
+  /** Whether change tracking is off for this workspace (remembered across restarts). */
+  private skipped(cwd: string): boolean {
+    let until = this.skip.get(cwd);
+    if (until === undefined) {
+      try {
+        until = Number(JSON.parse(fs.readFileSync(this.gitDir(cwd) + '.skip', 'utf8')).until) || 0;
+      } catch {
+        until = 0;
+      }
+      this.skip.set(cwd, until);
+    }
+    return until > Date.now();
+  }
+
+  private markSkip(cwd: string, reason: string): void {
+    const until = Date.now() + SKIP_MS;
+    this.skip.set(cwd, until);
+    log('changes', `change tracking off for ${cwd} for 24 h: ${reason}`);
+    try {
+      fs.mkdirSync(path.dirname(this.gitDir(cwd)), { recursive: true });
+      fs.writeFileSync(this.gitDir(cwd) + '.skip', JSON.stringify({ until, reason }));
+      // Partial copies from a snapshot that never finished are dead weight.
+      fs.rmSync(this.gitDir(cwd), { recursive: true, force: true });
+    } catch {
+      /* remembered in memory at least */
+    }
+  }
+
+  /** Why the workspace is too big to snapshot, or undefined. Stops counting as soon as a limit is passed. */
+  private async tooBig(cwd: string): Promise<string | undefined> {
+    const { files: maxFiles, bytes: maxBytes, ms } = this.limits;
+    const deadline = Date.now() + ms;
+    let files = 0;
+    let bytes = 0;
+    // A git repo: exactly the files a snapshot would take (its .gitignore applies), listed by git itself.
+    if (fs.existsSync(path.join(cwd, '.git'))) {
+      const list = await new Promise<string[] | undefined>((resolve) =>
+        execFile('git', ['-C', cwd, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { timeout: ms, windowsHide: true, maxBuffer: 512 * 1024 * 1024 }, (err, out) =>
+          resolve(err ? undefined : String(out).split('\0').filter(Boolean)),
+        ),
+      );
+      if (list) {
+        if (list.length > maxFiles) return `more than ${maxFiles} files`;
+        for (const f of list) {
+          if (Date.now() > deadline) return `more than ${ms / 1000} s just to size its files`;
+          try {
+            bytes += (await fs.promises.stat(path.join(cwd, f))).size;
+          } catch {
+            /* deleted but still in the index */
+          }
+          if (bytes > maxBytes) return `more than ${Math.round(maxBytes / 1024 ** 3)} GB of files`;
+        }
+        return undefined;
+      }
+    }
+    const stack = [cwd];
+    while (stack.length) {
+      if (Date.now() > deadline) return `more than ${ms / 1000} s just to list its files`;
+      const dir = stack.pop()!;
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch {
+        continue; // unreadable: git skips it too (--ignore-errors)
+      }
+      for (const e of entries) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (!SKIP_DIRS.has(e.name)) stack.push(p);
+        } else if (e.isFile()) {
+          if (++files > maxFiles) return `more than ${maxFiles} files`;
+          try {
+            bytes += (await fs.promises.stat(p)).size;
+          } catch {
+            /* vanished or unreadable */
+          }
+          if (bytes > maxBytes) return `more than ${Math.round(maxBytes / 1024 ** 3)} GB of files`;
+        }
+      }
+    }
+    return undefined;
   }
 
   /**

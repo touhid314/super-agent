@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createTranscriber } from './core/voice/audio';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AccountService } from './core/agents/accounts';
@@ -138,6 +139,7 @@ export async function startServer(options: { workspace: string; token: string },
       usageLoad: (id) => usage.load(id), usageResetAt: (id) => usage.resetAt(id),
       refreshUsage: (id) => usage.refresh(id, true), updateCli: (kind) => updater.update(kind),
       autonomy: () => config.settings.autonomy,
+      mediaDelivery: () => !!relay?.mediaEnabled,
       onChange: () => undefined,
       onOutput: (id, text) => relay?.onOutput(id, text),
       onFinished: (t, outcome) => { void relay?.onFinished(t, outcome).catch(() => log('server', 'Could not deliver a Telegram reply.')); },
@@ -158,6 +160,7 @@ export async function startServer(options: { workspace: string; token: string },
         return attachments;
       },
       agentName: name,
+      voice: createTranscriber(dir, () => config.settings.voiceModel || 'base.en'),
       isLeadCommand: async (id, command) => {
         const a = eng.commandAccountFor(id);
         return !!a && (await catalog.list(a, accounts.cliPath(a.kind), options.workspace)).some((c) => c.name === command && c.source === 'cli');

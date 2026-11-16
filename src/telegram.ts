@@ -8,6 +8,7 @@ import { ProgressTracker, elapsed } from './telegram-progress';
 import { TeamPanel, type TeamDeps } from './telegram-team';
 import type { Thread } from './engine/types';
 import { parseCommand } from './core/agents/commands';
+import { MAX_UPLOAD_BYTES, mediaIn, mediaMethod, mediaType, type UploadMethod } from './telegram-media';
 
 /** Where the relay keeps its pairing and thread choice. */
 export interface RelayStore {
@@ -57,6 +58,11 @@ export interface RelayDeps {
   fetch?: typeof fetch;
   /** Whether `/name` is one of the slash commands of the agent that would run it in this thread (its CLI's own). */
   isLeadCommand?(threadId: string | undefined, name: string): Promise<boolean>;
+  /** Voice notes and audio files: speech to text on this machine (Whisper). Absent: voice isn't available here. */
+  voice?: {
+    needsSetup(): boolean;
+    transcribe(audio: Uint8Array, name: string, prompt: string, progress?: (what: string, fraction?: number) => void): Promise<string>;
+  };
 }
 
 export type RelayState = 'off' | 'pairing' | 'on' | 'standby' | 'error';
@@ -66,7 +72,7 @@ const CHUNK = 4000; // Telegram's limit is 4096 characters per message
 const HELP = [
   'Super Agent relays your messages to the agents on your laptop.',
   '',
-  'Just type to talk to the team. Photos and files are attached.',
+  'Just type (or send a voice message) to talk to the team. Photos and files are attached.',
   "/team: who's on the team and who leads (tap to change)",
   '/files: explore the workspace folder',
   '/recent: recently changed files',
@@ -93,7 +99,12 @@ interface TgMessage {
   caption?: string;
   photo?: { file_id: string; file_size?: number }[];
   document?: { file_id: string; file_name?: string };
+  voice?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
+  audio?: { file_id: string; duration?: number; mime_type?: string; file_name?: string; file_size?: number };
 }
+
+/** Telegram lets bots download files up to 20 MB. */
+const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 
 /**
  * Telegram bot relay: messages from your (paired) chat go to the same engine the panel uses, and replies come back.
@@ -133,6 +144,10 @@ export class TelegramRelay {
 
   get chatId(): number | undefined {
     return this.d.store.get<number>('telegram.chat');
+  }
+  /** The engine only advertises media delivery while a paired relay is enabled. */
+  get mediaEnabled(): boolean {
+    return this.live;
   }
   /** While unpaired: the code that pairs a chat (sent by the t.me/<bot>?start=CODE link, or typed). */
   get pairCode(): string | undefined {
@@ -244,11 +259,13 @@ export class TelegramRelay {
   /** Called when any thread finishes: replies on your threads go back to Telegram. */
   async onFinished(t: Thread, outcome: 'done' | 'failed'): Promise<void> {
     if (!this.live || t.helperFile || !this.isTracked(t)) return;
+    const chat = this.chatId!;
     const last = [...t.messages].reverse().find((m) => (outcome === 'done' ? m.role === 'agent' : m.role !== 'user'));
     const stopped = outcome === 'failed' && !!last && last.role === 'system' && /stopp/i.test(last.text);
     const took = await this.progress.finish(t.id, outcome === 'done' ? 'done' : stopped ? 'stopped' : 'failed');
     if (stopped) return; // the status message already says so
     if (!last) return;
+    if (!this.live || this.chatId !== chat) return;
     // Who answered and how long it took, in the reply itself ("🤖 Opus 5.5 in 33s"): no separate "finished" message.
     const time = took ?? (last.workedMs ? elapsed(last.workedMs) : undefined);
     const who = last.role === 'agent' ? `🤖 ${this.d.agentName(last.accountId)}` : '⚠️ Super Agent';
@@ -258,8 +275,8 @@ export class TelegramRelay {
     // (Uppercase actions open a new explorer message, so the reply itself stays.)
     const browse = { inline_keyboard: [[{ text: '🕘 Recent changes', callback_data: 'fb:R' }, { text: '📁 Files', callback_data: 'fb:D' }]] };
     const header = `<b>${esc(who)}</b>${timed}${where ? `<i>${esc(where)}</i>` : ''}`;
-    await this.replyMarkdown(this.chatId!, last.text, header, `${who}${timed}${where}:\n\n${last.text}`, outcome === 'done' ? browse : undefined);
-    for (const img of imagesIn(last.text, t.cwd).slice(0, 5)) await this.sendPhoto(img).catch((e) => this.d.log(`Telegram photo: ${e.message}`));
+    await this.replyMarkdown(chat, last.text, header, `${who}${timed}${where}:\n\n${last.text}`, outcome === 'done' ? browse : undefined);
+    if (outcome === 'done') await this.sendMedia(chat, last.text, t.cwd);
   }
 
   // ------------------------------------------------------------ polling
@@ -351,7 +368,7 @@ export class TelegramRelay {
 
   private async onMessage(m: TgMessage): Promise<void> {
     const chat = m.chat.id;
-    const text = (m.text ?? m.caption ?? '').trim();
+    let text = (m.text ?? m.caption ?? '').trim();
     if (this.chatId === undefined) {
       // The QR link sends "/start CODE"; typing the code (or "/pair CODE") works too.
       const code = /^(?:\/(?:pair|start)\s+)?(\d{6})$/.exec(text)?.[1];
@@ -370,10 +387,20 @@ export class TelegramRelay {
       return;
     }
 
+    // A voice message (or audio file) becomes its words, which then go to the agents like typed text.
+    const spoken = m.voice ?? m.audio;
+    if (spoken) {
+      const words = await this.hear(chat, spoken, m.audio?.file_name ?? (m.voice ? 'voice.ogg' : 'audio'));
+      if (!words) return;
+      text = text ? `${words}
+
+${text}` : words;
+    }
+
     // The lead's own slash commands (/compact, /review, skills…) go to its CLI as typed; ours are handled here.
-    const lead = !m.photo && !m.document ? parseCommand(text.replace(/^(\/[^\s@]+)@\w+/, '$1')) : undefined;
+    const lead = !m.photo && !m.document && !spoken ? parseCommand(text.replace(/^(\/[^\s@]+)@\w+/, '$1')) : undefined;
     const leadCommand = !!lead && !TG_COMMANDS.has(lead.name) && !!(await this.d.isLeadCommand?.(this.current, lead.name));
-    const cmd = leadCommand ? null : /^\/(\w+)(?:@\w+)?\s*(.*)$/s.exec(text);
+    const cmd = leadCommand || spoken ? null : /^\/(\w+)(?:@\w+)?\s*(.*)$/s.exec(text);
     if (cmd && !m.photo && !m.document) {
       const [, name, arg] = cmd;
       if (name === 'start' || name === 'help') return void (await this.reply(chat, HELP));
@@ -478,6 +505,43 @@ export class TelegramRelay {
     return `${list.map((t, i) => `${i + 1}. ${t.id === this.current ? '▶ ' : ''}${t.title}${mark(t)}`).join('\n')}\n\nSwitch with /use N, or /new.`;
   }
 
+  /**
+   * The words of a voice message, transcribed on this machine; shown back in the chat so you see what the agents get.
+   * Undefined (after telling the user why) when it can't be understood.
+   */
+  private async hear(chat: number, a: { file_id: string; file_size?: number }, name: string): Promise<string | undefined> {
+    const voice = this.d.voice;
+    if (!voice) return void (await this.reply(chat, 'Voice messages need Whisper, which is not available here. Please type your message.'));
+    if ((a.file_size ?? 0) > MAX_DOWNLOAD_BYTES) return void (await this.reply(chat, 'That recording is too long (Telegram lets bots download up to 20 MB). Please send a shorter one.'));
+    try {
+      if (voice.needsSetup()) await this.reply(chat, '🎙️ Setting up voice messages: a one-time download of the Whisper speech model (about 150 MB). This takes a minute…', undefined, true);
+      void this.api('sendChatAction', { chat_id: chat, action: 'typing' }).catch(() => undefined);
+      const f = await this.api<{ file_path: string }>('getFile', { file_id: a.file_id });
+      const res = await this.http(`${API}/file/bot${this.token}/${f.file_path}`);
+      if (!res.ok) throw new Error(`download failed (${res.status})`);
+      const audio = new Uint8Array(await res.arrayBuffer());
+      const words = (await voice.transcribe(audio, f.file_path.split('/').pop() || name, this.voicePrompt())).trim();
+      if (!words) return void (await this.reply(chat, "🎙️ I couldn't make out any words in that recording. Please try again or type it."));
+      await this.api('sendMessage', { chat_id: chat, text: `🎙️ <i>${esc(words)}</i>`, parse_mode: 'HTML', disable_notification: true }).catch(() => this.reply(chat, `🎙️ ${words}`, undefined, true));
+      return words;
+    } catch (e) {
+      this.d.log(`Telegram voice: ${(e as Error).message}`);
+      return void (await this.reply(chat, `🎙️ Couldn't transcribe that: ${(e as Error).message}`));
+    }
+  }
+
+  /** Words Whisper should expect: the agents and the workspace's top-level names (it then spells them right). */
+  private voicePrompt(): string {
+    const words = ['Super Agent', 'Codex', 'Claude Code', 'Antigravity', 'Gemini'];
+    try {
+      const cwd = this.d.cwd();
+      if (cwd) words.push(...fs.readdirSync(cwd).filter((n) => !n.startsWith('.') && n !== 'node_modules').slice(0, 40));
+    } catch {
+      /* no folder */
+    }
+    return words.join(', ');
+  }
+
   private async download(m: TgMessage): Promise<string[]> {
     const items: { id: string; name: string }[] = [];
     if (m.photo?.length) items.push({ id: m.photo[m.photo.length - 1].file_id, name: `telegram-${Date.now()}.jpg` });
@@ -534,16 +598,45 @@ export class TelegramRelay {
       });
   }
 
-  private async sendPhoto(file: string): Promise<void> {
-    if (this.chatId !== undefined) await this.upload('sendPhoto', this.chatId, file);
+  /** Final-answer media is delivered without making the user browse to the file. */
+  private async sendMedia(chat: number, text: string, cwd: string): Promise<void> {
+    if (!this.live || this.chatId !== chat) return;
+    const files = mediaIn(text, cwd);
+    for (const file of files.slice(0, 5)) {
+      if (!this.live || this.chatId !== chat) return;
+      try {
+        await this.upload(mediaMethod(file, fs.statSync(file).size), chat, file);
+      } catch (e) {
+        this.d.log(`Telegram media: ${(e as Error).message}`);
+        if (this.live && this.chatId === chat)
+          await this.reply(chat, `Could not send ${path.basename(file)}: ${(e as Error).message}`).catch(() => undefined);
+      }
+    }
+    if (files.length > 5 && this.live && this.chatId === chat)
+      await this.reply(chat, `Only the first 5 media attachments are sent automatically. ${files.length - 5} more are available through /files.`);
   }
 
-  private async upload(method: 'sendDocument' | 'sendPhoto', chat: number, file: string): Promise<void> {
+  private async upload(method: UploadMethod, chat: number, file: string): Promise<void> {
+    if (!this.live || this.chatId !== chat || !this.token) throw new Error('Telegram is not connected to this chat.');
+    const stat = await fs.promises.stat(file);
+    if (!stat.isFile() || !stat.size) throw new Error('The file is empty or not a regular file.');
+    if (stat.size > MAX_UPLOAD_BYTES) throw new Error('Telegram bots can send files up to 50 MB. Export a smaller file.');
+    if (method === 'sendPhoto' && stat.size > 10 * 1024 * 1024) method = 'sendDocument';
     const form = new FormData();
     form.append('chat_id', String(chat));
-    form.append(method === 'sendPhoto' ? 'photo' : 'document', new Blob([fs.readFileSync(file)]), path.basename(file));
-    const res = await this.http(`${API}/bot${this.token}/${method}`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error(`${method} failed (${res.status})`);
+    const field = method === 'sendPhoto' ? 'photo' : method === 'sendVideo' ? 'video' : 'document';
+    form.append(field, new Blob([await fs.promises.readFile(file)], { type: mediaType(file) }), path.basename(file));
+    if (method === 'sendVideo') form.append('supports_streaming', 'true');
+    if (!this.live || this.chatId !== chat) throw new Error('Telegram is no longer connected to this chat.');
+    const signals = [AbortSignal.timeout(120000), ...(this.abort ? [this.abort.signal] : [])];
+    const res = await this.http(`${API}/bot${this.token}/${method}`, { method: 'POST', body: form, signal: AbortSignal.any(signals) });
+    const json = await res.json() as { ok: boolean; description?: string; error_code?: number };
+    if (!res.ok || !json.ok) {
+      // A valid file may use a codec, dimensions, or format Telegram can't preview.
+      if (method !== 'sendDocument' && (json.error_code ?? res.status) === 400)
+        return this.upload('sendDocument', chat, file);
+      throw new Error(json.description ?? `${method} failed (${res.status})`);
+    }
   }
 
   private async api<T = unknown>(method: string, body: unknown = {}, signal?: AbortSignal): Promise<T> {
@@ -622,17 +715,6 @@ export function chunks(text: string): string[] {
   }
   out.push(rest);
   return out;
-}
-
-/** Image files an agent mentions in its reply (e.g. screenshots it took), resolved against the workspace. */
-function imagesIn(text: string, cwd: string): string[] {
-  const found = new Set<string>();
-  for (const m of text.matchAll(/(?:[A-Za-z]:)?[\w./\\ ~-]*?[\w~-]+\.(?:png|jpe?g|gif|webp)/gi)) {
-    const raw = m[0].trim().replace(/^file:\/+/, '');
-    const p = path.isAbsolute(raw) ? raw : path.join(cwd, raw);
-    if (fs.existsSync(p) && fs.statSync(p).isFile()) found.add(path.normalize(p));
-  }
-  return [...found];
 }
 
 export function uniqueIn(dir: string, name: string): string {

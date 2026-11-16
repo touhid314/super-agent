@@ -86,7 +86,7 @@ sequenceDiagram
 ```
 
 - **Same CLI** (for example, Claude Code account 1 to account 2): the new agent continues the **exact same session**.
-- **Different CLI** (for example, Claude Code to Codex): the new agent receives a **full hand-over brief** with the conversation so far.
+- **Different CLI** (for example, Claude Code to Codex): the new agent receives the previous agent's **own session**: every message, tool call and tool output, converted from the other CLI's transcript. As much as fits goes straight into its prompt (newest first, with long outputs trimmed in the middle). The complete transcript is saved to a file it can read for anything older. Hidden reasoning isn't stored readably by the CLIs, so that part can't be carried over. Antigravity, which takes its prompt as a command-line argument, gets a shorter inline part plus the file.
 - An agent that ran out rests until its limit resets, using the reset time the provider reports, and then rejoins automatically.
 - Free agents with the most usage left are chosen first.
 
@@ -103,7 +103,10 @@ flowchart LR
 - **Talk to the same team** the panel uses. Replies come back formatted, with code blocks intact.
 - **Live progress.** One status message shows who is working, for how long and what they are doing right now, and turns into "Done in …" at the end.
 - **Send photos and files**; they are attached to your request.
+- **Talk instead of type.** Send a voice message (or an OGG, MP3, WAV or FLAC audio file). Whisper transcribes it on your own machine, so the audio never goes to a speech service. The chat shows you the words (🎙️ *…*), and the team works on them like a typed message. The first voice message triggers a one-time download of whisper.cpp and the speech model (about 150 MB; set with the voice model setting).
+- **Receive images and videos from your agents.** Ask for a screenshot, preview, or finished video: local media linked in the agent's final reply is uploaded to your paired Telegram chat automatically (up to five files per reply). MP4 videos play in the chat; unsupported preview formats arrive as downloadable originals. Files must be at most 50 MB. Failed uploads are reported in the chat.
 - **Browse the workspace** from the chat: tap through folders and files, see recently changed files and search by name.
+- **Preview saved videos:** open an MP4 in `/files` and tap **Video**, or download the original file.
 - **Manage the team** from the chat: see who is on the team and who leads, and change it with a tap.
 - **Threads:** start a new thread, switch between recent ones, or stop the current one.
 - **Private by design.** Only the chat you pair (with a one-time code or a QR code) can talk to your agents. The extension polls Telegram itself, so nothing on your machine has to be reachable from the internet. The bot token is kept in VS Code's secret storage.

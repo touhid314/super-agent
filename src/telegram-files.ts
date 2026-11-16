@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { UploadMethod } from './telegram-media';
 
 /** Telegram inline-keyboard button. */
 export interface Btn {
@@ -14,8 +15,8 @@ export interface View {
 export interface BrowserDeps {
   /** Telegram Bot API call (JSON body). */
   api<T = unknown>(method: string, body: Record<string, unknown>): Promise<T>;
-  /** Multipart upload: sendDocument / sendPhoto. */
-  upload(method: 'sendDocument' | 'sendPhoto', chat: number, file: string): Promise<void>;
+  /** Multipart upload with preview fallback handled by the relay. */
+  upload(method: UploadMethod, chat: number, file: string): Promise<void>;
   /** The workspace folder being explored. */
   root(): string | undefined;
   /** Queue a file to be attached to the user's next message to the agents. */
@@ -28,6 +29,7 @@ const MAX_TEXT = 2 * 1024 * 1024;
 /** Skipped when searching / listing recent changes (still browsable by tapping). */
 const HEAVY = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', '.next', '.cache', '.pytest_cache', '.mypy_cache', 'target', 'dist', 'out', 'build']);
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const VIDEO = /\.(mp4|m4v)$/i;
 const LANG: Record<string, string> = {
   ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript', py: 'python', json: 'json',
   md: 'markdown', css: 'css', html: 'html', yml: 'yaml', yaml: 'yaml', toml: 'toml', sh: 'bash', ps1: 'powershell', bat: 'batch',
@@ -110,9 +112,11 @@ export class FileBrowser {
         await this.d.upload('sendDocument', chat, abs).catch(() => this.d.api('sendMessage', { chat_id: chat, text: 'Could not send that file (Telegram bots can send files up to 50 MB).' }));
         return true;
       case 'img':
+      case 'vid':
         if (!abs) return (await toast('Not available')), true;
         await toast();
-        await this.d.upload('sendPhoto', chat, abs).catch(() => this.d.upload('sendDocument', chat, abs));
+        await this.d.upload(action === 'vid' ? 'sendVideo' : 'sendPhoto', chat, abs)
+          .catch(() => this.d.api('sendMessage', { chat_id: chat, text: 'Could not send that media file (Telegram bots can send files up to 50 MB).' }));
         return true;
       case 'att':
         if (!abs) return (await toast('Not available')), true;
@@ -194,6 +198,7 @@ export class FileBrowser {
     ];
 
     if (IMAGE.test(name)) return { text: `${head}\n\nImage file.`, buttons: [[{ text: '🖼', callback_data: `fb:img:${id}` }, ...actions], back] };
+    if (VIDEO.test(name)) return { text: `${head}\n\nVideo file.`, buttons: [[{ text: '▶ Video', callback_data: `fb:vid:${id}` }, ...actions], back] };
     const text = st.size <= MAX_TEXT ? readText(abs) : undefined;
     if (text === undefined) return { text: `${head}\n\n${st.size > MAX_TEXT ? 'Large file: download it to view.' : 'Binary file: download it to view.'}`, buttons: [actions, back] };
 

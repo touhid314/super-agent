@@ -4,7 +4,7 @@ import type { Account, AgentKind, Autonomy } from '../core/types';
 import type { AccountPool } from '../core/agents/pool';
 import type { ApprovalAnswer, ApprovalAsk, RunRequest, RunResult } from '../core/agents/runner';
 import type { ConfigStore } from '../core/store/config';
-import { NARRATE, contextBrief, helperPrompt, leadPreamble, transferSession } from './context';
+import { MEDIA_DELIVERY, NARRATE, contextBrief, helperPrompt, leadPreamble, transferSession } from './context';
 import { projectDir } from '../core/store/paths';
 import type { RunChanges, Thread, ThreadMsg } from './types';
 import { log } from '../core/log';
@@ -34,6 +34,8 @@ export interface EngineDeps {
   usageLoad(id: string): number;
   usageResetAt(id: string): number | undefined;
   autonomy(): Autonomy;
+  /** Whether a paired Telegram relay can deliver final-answer media. */
+  mediaDelivery?(): boolean;
   onChange(): void;
   onOutput(threadId: string, text: string): void;
   onFinished(t: Thread, outcome: 'done' | 'failed'): void;
@@ -582,9 +584,16 @@ export class Engine {
     } else if (prev && prev.kind === acc.kind && acc.kind !== 'antigravity' && this.account(prev.accountId) && transferSession(prev, this.account(prev.accountId)!, acc)) {
       resume = prev.id; // exact context carried to another account of the same CLI
     } else if (!command && (prev || t.messages.length > 1)) {
-      input = `${contextBrief(t, (id) => this.label(id), prev ? `continuing from ${this.label(prev.accountId)}` : 'continuing this thread')}\n\n## Now\n${prompt}`;
+      const brief = contextBrief(t, (id) => this.label(id), prev ? `continuing from ${this.label(prev.accountId)}` : 'continuing this thread', {
+        session: prev,
+        from: this.account(prev?.accountId),
+        toKind: acc.kind,
+        outDir: path.join(this.d.dataDir, 'handover'),
+      });
+      input = `${brief}\n\n## Now\n${prompt}`;
     }
     if (!command) {
+      if (!attach && !t.helperFile && this.d.mediaDelivery?.()) input = MEDIA_DELIVERY + input;
       // Every thread, helpers included, can hand off work; its own folder tells us exactly who asked.
       // An agent without teammates gets no team instructions: hand-offs would only come back to itself, one by one.
       const hasTeam = this.d.config.accounts.some((a) => a.id !== acc.id && a.role !== 'off');

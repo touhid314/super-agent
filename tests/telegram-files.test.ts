@@ -52,6 +52,17 @@ function browser(root: string) {
 }
 
 describe('Telegram workspace explorer', () => {
+  it('offers an inline video preview as well as the original download', async () => {
+    const root = workspace();
+    fs.writeFileSync(path.join(root, 'lesson.mp4'), 'video content');
+    const h = browser(root);
+    await h.b.open(1);
+    await h.tap('lesson.mp4', h.last('sendMessage'));
+    expect(h.last('editMessageText').text).toContain('Video file.');
+    await h.tap('Video');
+    await h.tap('⬇');
+    expect(h.uploads).toEqual(['sendVideo:lesson.mp4', 'sendDocument:lesson.mp4']);
+  });
   it('lists folders first, hides dot files until asked, and navigates in place', async () => {
     const h = browser(workspace());
     await h.b.open(1);

@@ -18,6 +18,7 @@ function fakeTelegram() {
   const quiet: string[] = [];
   let id = 1;
   const fetch = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes('/file/bot')) return new Response(new Uint8Array([1, 2, 3]));
     const method = String(url).split('/').pop()!;
     const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : {};
     const ok = (result: unknown) => new Response(JSON.stringify({ ok: true, result }));
@@ -30,14 +31,16 @@ function fakeTelegram() {
       if (body.disable_notification) quiet.push(body.text);
       return ok({ message_id: sent.length });
     }
+    if (method === 'getFile') return ok({ file_path: 'voice/file_1.oga' });
     return ok(true);
   }) as typeof globalThis.fetch;
   const say = (chat: number, text: string) => inbox.push({ update_id: id++, message: { chat: { id: chat }, text } });
   const tap = (chat: number, data: string) => inbox.push({ update_id: id++, callback_query: { id: String(id), data, message: { message_id: 1, chat: { id: chat } } } });
-  return { fetch, sent, quiet, say, tap };
+  const send = (chat: number, message: object) => inbox.push({ update_id: id++, message: { chat: { id: chat }, ...message } });
+  return { fetch, sent, quiet, say, tap, send };
 }
 
-function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Promise<void>) {
+function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Promise<void>, voice?: ConstructorParameters<typeof TelegramRelay>[0]['voice']) {
   const cwd = path.join(dir, 'proj');
   fs.mkdirSync(cwd, { recursive: true });
   const runs: RunRequest[] = [];
@@ -73,6 +76,7 @@ function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Pr
     log: () => undefined,
     onChange: () => undefined,
     fetch: tg.fetch,
+    voice,
   });
   const until = async (pred: () => boolean) => {
     for (let i = 0; i < 300 && !pred(); i++) await new Promise((r) => setTimeout(r, 10));
@@ -235,5 +239,59 @@ describe('Telegram relay', () => {
     const parts = chunks(`${'a'.repeat(3000)}\n${'b'.repeat(3000)}`);
     expect(parts).toHaveLength(2);
     expect(parts.every((p) => p.length <= 4000)).toBe(true);
+  });
+});
+
+describe('Telegram voice messages', () => {
+  it('transcribes a voice message, shows the words, and sends them to the agents as the message', async () => {
+    const heard: { bytes: number[]; name: string }[] = [];
+    const h = setup(undefined, undefined, {
+      needsSetup: () => false,
+      transcribe: async (audio, name) => {
+        heard.push({ bytes: [...audio], name });
+        return 'run the tests and fix what fails';
+      },
+    });
+    try {
+      h.relay.start('123:token');
+      h.tg.say(7, `/start ${h.relay.pairCode}`);
+      await h.until(() => h.relay.state === 'on');
+      h.tg.send(7, { voice: { file_id: 'v1', duration: 3, mime_type: 'audio/ogg' } });
+      await h.until(() => h.runs.length === 1);
+      expect(heard).toEqual([{ bytes: [1, 2, 3], name: 'file_1.oga' }]);
+      expect(h.tg.sent.some((m) => m.text === '🎙️ <i>run the tests and fix what fails</i>')).toBe(true);
+      expect(h.runs[0].prompt).toContain('run the tests and fix what fails');
+    } finally {
+      h.relay.stop();
+      h.engine.dispose();
+    }
+  });
+
+  it('a spoken "slash" is never a command, and without Whisper the user is asked to type', async () => {
+    const h = setup(undefined, undefined, { needsSetup: () => true, transcribe: async () => '/new' });
+    try {
+      h.relay.start('123:token');
+      h.tg.say(7, `/start ${h.relay.pairCode}`);
+      await h.until(() => h.relay.state === 'on');
+      h.tg.send(7, { voice: { file_id: 'v1' } });
+      await h.until(() => h.runs.length === 1);
+      expect(h.tg.sent.some((m) => m.text.includes('one-time download'))).toBe(true);
+      expect(h.runs[0].prompt).toContain('/new');
+    } finally {
+      h.relay.stop();
+      h.engine.dispose();
+    }
+    const n = setup();
+    try {
+      n.relay.start('123:token');
+      n.tg.say(7, `/start ${n.relay.pairCode}`);
+      await n.until(() => n.relay.state === 'on');
+      n.tg.send(7, { voice: { file_id: 'v1' } });
+      await n.until(() => n.tg.sent.some((m) => m.text.includes('Please type')));
+      expect(n.runs).toHaveLength(0);
+    } finally {
+      n.relay.stop();
+      n.engine.dispose();
+    }
   });
 });

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createTranscriber } from './core/voice/audio';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { AccountService } from './core/agents/accounts';
@@ -150,6 +151,7 @@ export function activate(context: vscode.ExtensionContext): void {
     usageResetAt: (id) => usage.resetAt(id),
     refreshUsage: (id) => usage.refresh(id, true),
     autonomy: () => config.settings.autonomy,
+    mediaDelivery: () => !!telegram?.mediaEnabled,
     onChange: () => pushState(),
     onOutput: (threadId, text) => {
       post({ type: 'output', threadId, text });
@@ -306,6 +308,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return dir;
     },
     agentName: modelName,
+    voice: createTranscriber(paths.data, () => config.settings.voiceModel || 'base.en'),
     isLeadCommand: async (threadId, name) => !!(await leadCommands(threadId))?.list.some((c) => c.name === name && c.source === 'cli'),
     team: {
       members: () =>

@@ -54,6 +54,20 @@ function setup(accounts: Account[], agent: (req: RunRequest, n: number) => Promi
 const msgs = (t: Thread, role: string) => t.messages.filter((m) => m.role === role).map((m) => m.text);
 
 describe('lead works itself and keeps its context', () => {
+  it('tells a solo agent how to deliver media on new and resumed turns', async () => {
+    const h = setup([acc('a', 'codex', 'master')], async () => ok('ready', 'sess-media'), { mediaDelivery: () => true });
+    try {
+      const t = h.engine.send(undefined, 'make a video', h.cwd);
+      await h.idle();
+      h.engine.send(t.id, 'send the finished video', h.cwd);
+      await h.idle();
+      expect(h.runs).toHaveLength(2);
+      expect(h.runs.every(r => r.prompt.includes('<super-agent-media>') && r.prompt.includes('paired chat automatically'))).toBe(true);
+      expect(h.runs[1].resume).toBe('sess-media');
+    } finally {
+      h.engine.dispose();
+    }
+  });
   it('starts work immediately (no planning) and resumes its own session on the next message', async () => {
     const h = setup([acc('a', 'codex', 'master'), acc('b')], async (req, n) => ok(`answer ${n}`, 'sess-1'));
     const t = h.engine.send(undefined, 'build the thing', h.cwd);
@@ -921,5 +935,62 @@ describe('hand-offs with nobody else on the team', () => {
     h.engine.send(t.id, 'next', h.cwd);
     await h.idle();
     expect(h.runs.at(-1)!.prompt).toContain('You have no teammates right now'); // and every turn says so
+  });
+});
+
+describe('cross-CLI hand-over carries the previous agent\'s own session', () => {
+  const claudeLine = (type: 'user' | 'assistant', content: unknown) => JSON.stringify({ type, isSidechain: false, message: { role: type, content } });
+  function claudeHome(sessionId: string, lines: string[]) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-home-'));
+    fs.mkdirSync(path.join(home, 'projects', 'proj'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'projects', 'proj', `${sessionId}.jsonl`), lines.join('\n') + '\n');
+    return home;
+  }
+
+  it('gives the new agent the transcript (tool calls and outputs), and saves a complete copy', async () => {
+    const home = claudeHome('sa', [
+      claudeLine('user', '<super-agent-internal>team plumbing</super-agent-internal>design the schema'),
+      claudeLine('assistant', [{ type: 'thinking', thinking: '' }, { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cat schema.sql', description: 'Read schema' } }]),
+      claudeLine('user', [{ type: 'tool_result', tool_use_id: 't1', content: 'CREATE TABLE users (id serial);' }]),
+      claudeLine('assistant', [{ type: 'text', text: 'Users table needs an email column.' }]),
+    ]);
+    const a: Account = { ...acc('a', 'claude', 'master'), home };
+    const h = setup([a, acc('c', 'codex')], async (_req, n) => ok(`r${n}`, n === 1 ? 'sa' : `s${n}`));
+    const t = h.engine.send(undefined, 'design the schema', h.cwd);
+    await h.idle();
+    h.engine.setLead(t.id, 'c');
+    h.engine.send(t.id, 'continue with migrations', h.cwd);
+    await h.idle();
+    const p = h.runs[1].prompt;
+    expect(h.runs[1].account.id).toBe('c');
+    expect(p).toContain("The previous agent's session");
+    expect(p).toContain('TOOL CALL Bash:\ncat schema.sql   # Read schema');
+    expect(p).toContain('CREATE TABLE users (id serial);');
+    expect(p).toContain('Users table needs an email column.');
+    expect(p).not.toContain('team plumbing');
+    const file = /complete copy: (.+?\.md)\)/.exec(p)?.[1];
+    expect(file && fs.readFileSync(file, 'utf8')).toContain('CREATE TABLE users');
+  });
+
+  it('fits the newest part inline and points to the file for the rest; Antigravity (prompt as argument) gets a short one', async () => {
+    const lines = [claudeLine('user', 'start')];
+    for (let i = 0; i < 200; i++) {
+      lines.push(claudeLine('assistant', [{ type: 'tool_use', id: `t${i}`, name: 'Bash', input: { command: `step ${i}` } }]));
+      lines.push(claudeLine('user', [{ type: 'tool_result', tool_use_id: `t${i}`, content: `out-${i} ` + 'x'.repeat(3000) }]));
+    }
+    for (const [to, max] of [['codex', 260_000], ['antigravity', 40_000]] as const) {
+      const home = claudeHome('sa', lines);
+      const h = setup([{ ...acc('a', 'claude', 'master'), home }, acc('c', to)], async (_req, n) => ok(`r${n}`, n === 1 ? 'sa' : `s${n}`));
+      const t = h.engine.send(undefined, 'start', h.cwd);
+      await h.idle();
+      h.engine.setLead(t.id, 'c');
+      h.engine.send(t.id, 'go on', h.cwd);
+      await h.idle();
+      const p = h.runs[1].prompt;
+      expect(p.length).toBeLessThan(max);
+      expect(p).toContain('step 199');
+      expect(p).toContain('out-199');
+      expect(p).toMatch(/earlier entries are not shown here; read them in .+\.md/);
+    }
   });
 });

@@ -41,6 +41,8 @@ node dist/server.cjs --workspace /abs/project
 - The daemon keeps its own pairing under `~/.super-agent/server/telegram.json`. It does not reuse VS Code's pairing or conversation history.
 - The startup log prints a `https://t.me/<bot>?start=<code>` link. Open it on your phone and tap **Start** to pair, or send `/pair CODE` to the bot. Keep the link and logs private.
 - Send requests normally. `/team` changes the lead, members and models; `/files` browses the workspace; `/threads` switches conversations; `/stop` stops current work. Approval requests appear with buttons in the paired chat. Your configured autonomy level stays unchanged.
+- **Voice messages:** these need whisper.cpp. On Linux there is no automatic download, so install it yourself (build it from https://github.com/ggml-org/whisper.cpp) so that `whisper-cli` is on the service's `PATH`. The speech model is still downloaded automatically, into `~/.super-agent/server/whisper/`, on first use. Without `whisper-cli`, the bot replies with a short message explaining how to set it up.
+- Ask for images or videos normally. The agent is told to link finished local media in its final reply; the relay uploads up to five files to your paired chat. PNG/JPEG images appear as photos, MP4 videos play inline when Telegram supports their encoding, and other formats arrive as original files. Files above 50 MB need a smaller export; upload failures are reported in the chat. `/files` also offers a **Video** button for MP4 files.
 
 Press `Ctrl+C` (`SIGINT`) to stop the test run cleanly.
 

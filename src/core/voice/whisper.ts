@@ -44,7 +44,8 @@ export class Whisper {
       }
       return undefined;
     };
-    return find(path.join(this.dir, 'bin'));
+    // Elsewhere (Linux: no prebuilt download) a whisper.cpp the user installed on PATH works too.
+    return find(path.join(this.dir, 'bin')) ?? onPath(process.platform === 'win32' ? CLI : 'whisper-cli');
   }
 
   /** What still has to be downloaded (empty: ready). */
@@ -56,7 +57,7 @@ export class Whisper {
     fs.mkdirSync(this.dir, { recursive: true });
     if (!this.cli()) {
       if (process.platform !== 'win32') {
-        throw new Error('Voice dictation is currently only supported on Windows (no prebuilt Linux whisper.cpp binary).');
+        throw new Error('Voice needs whisper.cpp: on Windows it is downloaded automatically; elsewhere, install it so `whisper-cli` is on PATH.');
       }
       progress('Finding the latest whisper.cpp build…');
       const releases = (await (await fetch(RELEASES, { headers: { Accept: 'application/vnd.github+json' } })).json()) as any[];
@@ -89,6 +90,14 @@ export class Whisper {
     const args = ['-m', this.modelFile(), '-f', wavFile, '-nt', '-np', '-t', threads, ...(prompt ? ['--prompt', prompt] : [])];
     return cleanTranscript(await run(cli, args, 120000));
   }
+}
+
+function onPath(name: string): string | undefined {
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    const f = dir && path.join(dir, name);
+    if (f && fs.existsSync(f)) return f;
+  }
+  return undefined;
 }
 
 /** whisper-cli's text output as one line, without its markers for silence or sounds ("[BLANK_AUDIO]", "(wind)"). */

@@ -28,7 +28,7 @@
 3. Open the Super Agent panel in the Activity Bar, click **+** to add an account and sign in. Add as many accounts as you have.
 4. Open a folder and ask the team for anything.
 
-For an **always-on agent on your own Linux server, controlled from Telegram**, use the [standalone server and systemd setup](docs/linux-server.md). It keeps running independently of VS Code and relays messages, progress, and permission requests through Telegram. Microphone dictation is available in local Windows workspaces.
+Super Agent is an **always-on agent**: it keeps working on your workstation, and you reach the team from Telegram wherever you are. Messages, progress and permission requests all go through the chat. Microphone dictation is available in local Windows workspaces.
 
 ## Why Super Agent
 

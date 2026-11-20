@@ -55,7 +55,7 @@
         { "@type": "Question", "name": "Do I need several accounts?", "acceptedAnswer": { "@type": "Answer", "text": "No. Super Agent works with a single account. Add more accounts of the same agent, or other agents, whenever you want teammates and automatic hand-over at usage limits." } },
         { "@type": "Question", "name": "What happens when an agent hits its usage limit?", "acceptedAnswer": { "@type": "Answer", "text": "A free teammate continues where it stopped. Between accounts of the same CLI it continues the exact same session; across CLIs it receives the previous agent's full transcript. The agent that ran out rejoins when its limit resets." } },
         { "@type": "Question", "name": "Can I use it away from my computer?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Pair a Telegram bot and use the team from your phone: send requests, follow progress, approve actions and receive files, while Super Agent runs on your workstation." } },
-        { "@type": "Question", "name": "Can it run all the time?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It keeps working as long as Super Agent runs on your Windows or Linux workstation, and you reach it from Telegram. On Linux, a documented standalone service keeps it running even with VS Code closed." } },
+        { "@type": "Question", "name": "Can it run all the time?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Super Agent keeps working on your workstation, and you reach the team from Telegram wherever you are." } },
         { "@type": "Question", "name": "How much does it cost?", "acceptedAnswer": { "@type": "Answer", "text": "Super Agent is free. You bring your own Claude, ChatGPT or Google accounts; each provider's plans, costs and usage limits apply." } }
       ]
     }
@@ -215,8 +215,7 @@
         <li><b>Browse your workspace,</b> switch threads and change the lead.</li>
         <li><b>Private:</b> only your paired chat can talk to the agents. Nothing on your machine has to be reachable from the internet.</li>
       </ul>
-      <p class="sub small-sub"><b>Always On Agent.</b> Works with Super Agent running in VS Code on your Windows or Linux workstation. On Linux you can also run it as a standalone service, so the team stays on even with VS Code closed.</p>
-      <a class="more" href="https://github.com/touhid314/super-agent/blob/main/docs/linux-server.md">Standalone server setup →</a>
+      <p class="sub small-sub"><b>Always On Agent.</b> Super Agent keeps working on your workstation, and you reach the team from Telegram wherever you are.</p>
     </div>
     <div class="tg" role="img" aria-label="Example Telegram conversation with Super Agent">
       <div class="tg-top">Super Agent bot</div>
@@ -259,22 +258,6 @@
 </section>
 
 
-<section class="sec">
-  <div class="wrap">
-    <div class="sec-head">
-      <p class="num">05</p>
-      <div><h2>Built into VS Code.</h2></div>
-    </div>
-    <ul class="features">
-      <li><b>Live output.</b> See what each agent is doing, or open the full log.</li>
-      <li><b>Threads that survive restarts.</b> An interrupted thread picks up on your next message.</li>
-      <li><b>The lead's own commands.</b> Type <code>/</code> for its slash commands and skills, plus <code>/model</code> and <code>/effort</code>.</li>
-      <li><b>Browser tools.</b> Agents can navigate, click and screenshot pages with Playwright.</li>
-      <li><b>One-click setup.</b> Installs the official CLIs. No admin rights or Node.js needed.</li>
-      <li><b>Remote SSH.</b> Install it on the Linux host and use it as usual.</li>
-    </ul>
-  </div>
-</section>
 
 <section id="faq" class="sec band">
   <div class="wrap narrow">
@@ -284,7 +267,7 @@
     <details><summary>Do I need several accounts?</summary><p>No. Super Agent works with a single account. Add more accounts of the same agent, or other agents, whenever you want teammates and automatic hand-over at usage limits.</p></details>
     <details><summary>What happens when an agent hits its usage limit?</summary><p>A free teammate continues where it stopped. Between accounts of the same CLI it continues the exact same session; across CLIs it receives the previous agent's full transcript. The agent that ran out rejoins when its limit resets.</p></details>
     <details><summary>Can I use it away from my computer?</summary><p>Yes. Pair a Telegram bot and use the team from your phone: send requests, follow progress, approve actions and receive files, while Super Agent runs on your workstation.</p></details>
-    <details><summary>Can it run all the time?</summary><p>Yes. It keeps working as long as Super Agent runs on your Windows or Linux workstation, and you reach it from Telegram. On Linux, a documented standalone service keeps it running even with VS Code closed.</p></details>
+    <details><summary>Can it run all the time?</summary><p>Yes. Super Agent keeps working on your workstation, and you reach the team from Telegram wherever you are.</p></details>
     <details><summary>How much does it cost?</summary><p>Super Agent is free. You bring your own Claude, ChatGPT or Google accounts; each provider's plans, costs and usage limits apply.</p></details>
   </div>
 </section>

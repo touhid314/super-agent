@@ -192,3 +192,12 @@ details p { color: var(--ink2); margin: 10px 0 0; }
 .steps li { padding-left: 92px; }
 .steps .step-ic { position: absolute; left: 44px; top: 22px; }
 .setups .card-ic { width: 28px; height: 28px; margin-bottom: 14px; }
+
+/* Agent and Telegram brand marks */
+.logo { display: inline-block; flex: none; vertical-align: -2px; }
+.chip .logo, .who .logo { margin-right: 1px; }
+.panel .logo path[fill="currentColor"] { fill: #e8e8e8; }
+.marks { display: flex; gap: 8px; margin-bottom: 10px; color: var(--ink); }
+.tg-top { display: flex; align-items: center; gap: 8px; }
+.via { display: inline-flex; align-items: center; gap: 8px; margin: 10px 0 0; font-weight: 600; color: #1b8ac0; }
+.row-marks { display: flex; gap: 10px; margin: 10px 0 0 !important; color: var(--ink); }

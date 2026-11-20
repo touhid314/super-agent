@@ -142,7 +142,7 @@
       <p class="num">01</p>
       <div>
         <h2>A leader, not a manager.</h2>
-        <p class="sub">Most multi-agent systems are orchestrator-based: an orchestrator agent sits on top, plans, hands pieces of work to sub-agents and combines what they report. OpenClaw is a well-known example: a parent agent spawns sub-agents and gathers their results. Super Agent has no separate orchestrator. The agent that leads your request is a working coding agent: it starts on the task itself and hands off only the pieces that can run in parallel.</p>
+        <p class="sub">Most multi-agent systems, like OpenClaw, put an orchestrator on top: it plans, briefs sub-agents, waits, then merges. Every plan and hand-off adds friction and slows the work, often for little gain. Super Agent has no orchestrator. The lead is a working coding agent: it starts on your task right away and hands off only what can run in parallel.</p>
       </div>
     </div>
 
@@ -172,11 +172,11 @@
         <div class="lane"><div class="who-l">Lead <em>♛</em></div><div class="track">
           <span class="blk code" style="--s:1;--e:3">Read the code</span>
           <span class="blk hand" style="--s:3;--e:4">Hand off</span>
-          <span class="blk code" style="--s:4;--e:10">Fix the bug, in its own session</span>
-          <span class="blk code" style="--s:10;--e:11">Reply</span>
+          <span class="blk code" style="--s:4;--e:8">Fix the bug, own session</span>
+          <span class="blk code" style="--s:8;--e:9">Reply</span>
         </div></div>
         <div class="lane"><div class="who-l">Teammate</div><div class="track">
-          <span class="blk code" style="--s:4;--e:10">Write tests, same folder</span>
+          <span class="blk code" style="--s:4;--e:8">Write tests, same folder</span>
         </div></div>
         <div class="lane ghost"><div class="who-l">Manager</div><div class="track"><span class="none">none</span></div></div>
       </div>

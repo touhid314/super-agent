@@ -43,7 +43,7 @@ Coding agents are great until you hit a usage limit in the middle of a task, or 
 
 ## Leader-based, not orchestrator-based
 
-Most multi-agent systems are orchestrator-based: a separate orchestrator agent plans the work, hands pieces to sub-agents and combines their results. [OpenClaw](https://docs.openclaw.ai/tools/subagents) is a well-known example, where a parent agent spawns sub-agents and gathers what they report. Super Agent has **no separate orchestrator agent**: a working coding agent leads, starts on the task itself, keeps its own session, and hands only independent pieces to free teammates in the same folder. The lead still coordinates the work; the distinction is that there is no separate manager model.
+Most multi-agent systems, like [OpenClaw](https://docs.openclaw.ai/tools/subagents), put an orchestrator on top: it plans, briefs sub-agents, waits, then merges. Every plan and hand-off adds friction and slows the work, often for little gain. Super Agent has **no separate orchestrator agent**: a working coding agent leads, starts on the task itself, keeps its own session, and hands only independent pieces to free teammates in the same folder. The lead still coordinates the work; the distinction is that there is no separate manager model.
 
 | | Separate-manager setups often... | Super Agent |
 |---|---|---|

@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Super Agent: the Avengers of coding agents | Claude Code, Codex and Antigravity as one team</title>
+<meta name="description" content="Super Agent is a free VS Code extension that turns Claude Code, Codex and Antigravity into one multi-agent coding team. Leader-based, with no separate orchestrator agent: one agent leads, teammates help, and work continues when an account hits its usage limit. Use it from anywhere over Telegram: an always-on agent on your workstation.">
+<link rel="canonical" href="https://touhid314.github.io/super-agent/">
+<meta name="theme-color" content="#f5f3ee">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Super Agent">
+<meta property="og:title" content="Super Agent: the Avengers of coding agents">
+<meta property="og:description" content="Claude Code, Codex and Antigravity working as one team in VS Code. One agent leads, the team helps, and nobody stops at a usage limit.">
+<meta property="og:url" content="https://touhid314.github.io/super-agent/">
+<meta property="og:image" content="https://touhid314.github.io/super-agent/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Super Agent: Claude Code, Codex and Antigravity assembled into one coding team">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Super Agent: the Avengers of coding agents">
+<meta name="twitter:description" content="Claude Code, Codex and Antigravity working as one team in VS Code. Leader-based multi-agent system with no separate orchestrator agent.">
+<meta name="twitter:image" content="https://touhid314.github.io/super-agent/assets/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://touhid314.github.io/super-agent/#app",
+      "name": "Super Agent",
+      "alternateName": ["Super Agent for VS Code", "SuperAgent"],
+      "description": "A free VS Code extension that runs Claude Code, Codex and Antigravity as one leader-based multi-agent coding team, with automatic hand-over at usage limits and Telegram control.",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "VS Code extension",
+      "operatingSystem": "Windows 10, Windows 11, Linux",
+      "url": "https://touhid314.github.io/super-agent/",
+      "downloadUrl": "https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid",
+      "softwareVersion": "0.3.12",
+      "image": "https://touhid314.github.io/super-agent/assets/og.png",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "author": { "@type": "Person", "name": "Touhidul Islam" },
+      "sameAs": ["https://github.com/touhid314/super-agent", "https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid"]
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        { "@type": "Question", "name": "What is Super Agent?", "acceptedAnswer": { "@type": "Answer", "text": "A free VS Code extension that puts Claude Code, Codex and Antigravity, with as many accounts of each as you like, behind one panel and lets them work as one team in your workspace." } },
+        { "@type": "Question", "name": "What does leader-based multi-agent mean?", "acceptedAnswer": { "@type": "Answer", "text": "There is no separate orchestrator or manager agent. One real coding agent leads your request and starts working immediately. It hands only independent pieces to free teammates, who work in parallel in the same folder." } },
+        { "@type": "Question", "name": "Do I need several accounts?", "acceptedAnswer": { "@type": "Answer", "text": "No. Super Agent works with a single account. Add more accounts of the same agent, or other agents, whenever you want teammates and automatic hand-over at usage limits." } },
+        { "@type": "Question", "name": "What happens when an agent hits its usage limit?", "acceptedAnswer": { "@type": "Answer", "text": "A free teammate continues where it stopped. Between accounts of the same CLI it continues the exact same session; across CLIs it receives the previous agent's full transcript. The agent that ran out rejoins when its limit resets." } },
+        { "@type": "Question", "name": "Can I use it away from my computer?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Pair a Telegram bot and use the team from your phone: send requests, follow progress, approve actions and receive files, while Super Agent runs on your workstation." } },
+        { "@type": "Question", "name": "Can it run all the time?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It keeps working as long as Super Agent runs on your Windows or Linux workstation, and you reach it from Telegram. On Linux, a documented standalone service keeps it running even with VS Code closed." } },
+        { "@type": "Question", "name": "How much does it cost?", "acceptedAnswer": { "@type": "Answer", "text": "Super Agent is free. You bring your own Claude, ChatGPT or Google accounts; each provider's plans, costs and usage limits apply." } }
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="Super Agent home"><img src="assets/icon.svg" alt="" width="26" height="26">Super Agent</a>
+    <nav aria-label="Main">
+      <a href="#how">How it works</a>
+      <a href="#limits">Usage limits</a>
+      <a href="#always-on">Use from Telegram</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/touhid314/super-agent">GitHub</a>
+    </nav>
+    <a class="btn small" href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">Install</a>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="kicker">VS Code extension · free · Windows &amp; Linux</p>
+      <h1>The Avengers of coding agents.</h1>
+      <p class="lede">Super Agent puts Claude Code, Codex and Antigravity on one team. One agent leads your request, the others pick up independent pieces, and when someone hits a usage limit a teammate carries on. Away from your desk? Drive the whole team from your phone over Telegram.</p>
+      <div class="ctas">
+        <a class="btn" href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">Install from the Marketplace</a>
+        <a class="btn line" href="https://github.com/touhid314/super-agent">Source on GitHub</a>
+      </div>
+      <p class="note">Bring your own accounts. One is enough to start.</p>
+    </div>
+
+    <div class="panel" role="img" aria-label="Example of the Super Agent panel in VS Code: two Claude Code accounts, Codex and Antigravity on one team">
+      <div class="panel-bar"><span>SUPER AGENT · TEAM OF 4</span><span class="dots"><i></i><i></i><i></i></span></div>
+      <div class="chips">
+        <span class="chip on"><b class="c-claude"></b>Claude Code · work <em>♛</em></span>
+        <span class="chip on"><b class="c-claude"></b>Claude Code · personal</span>
+        <span class="chip on"><b class="c-codex"></b>Codex</span>
+        <span class="chip"><b class="c-agy"></b>Antigravity</span>
+      </div>
+      <div class="msg you">Fix the login redirect bug and add tests for it.</div>
+      <div class="msg work">
+        <div class="who"><b class="c-claude"></b>Claude Code · work <span>working 1m 12s</span></div>
+        <ul>
+          <li>Edited <code>src/auth/login.ts</code> <span class="add">+14</span> <span class="del">−6</span></li>
+          <li class="hand">Handed “tests for the login redirect” to Codex</li>
+          <li class="limit">Usage limit reached</li>
+        </ul>
+      </div>
+      <div class="msg work">
+        <div class="who"><b class="c-claude"></b>Claude Code · personal <span>same session</span></div>
+        <ul><li>Continued where “work” stopped</li><li>Edited <code>src/auth/session.ts</code> <span class="add">+5</span></li></ul>
+      </div>
+      <div class="msg work helper">
+        <div class="who"><b class="c-codex"></b>Codex <span>helping · 48s</span></div>
+        <ul><li>Wrote <code>tests/login.test.ts</code> <span class="add">+52</span></li><li>Ran tests: 9 passed</li></ul>
+      </div>
+      <div class="usage">
+        <div><span>Claude · work</span><i style="--v:0%"></i><small>resets 1h 24m</small></div>
+        <div><span>Claude · personal</span><i style="--v:72%"></i><small>72% left</small></div>
+        <div><span>Codex</span><i style="--v:81%"></i><small>81% left</small></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="facts">
+  <div class="wrap facts-grid">
+    <div><b>3</b><span>coding agents: Claude Code, Codex, Antigravity</span></div>
+    <div><b>Any</b><span>number of accounts of each, or just one</span></div>
+    <div><b>0</b><span>separate manager agents in the loop</span></div>
+    <div><b>Always On Agent</b><span>your workstation keeps working; you steer it from Telegram</span></div>
+  </div>
+</section>
+
+<section id="how" class="sec">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="num">01</p>
+      <div>
+        <h2>A leader, not a manager.</h2>
+        <p class="sub">Many multi-agent setups put a manager agent on top. It plans, routes pieces of work to other agents and combines what comes back, but doesn't write code itself. Super Agent has no separate orchestrator. The agent that leads your request is a working coding agent: it starts on the task itself and hands off only the pieces that can run in parallel.</p>
+      </div>
+    </div>
+
+    <figure class="lanes">
+      <figcaption><b>Same request, two architectures.</b> “Fix the login redirect bug and add tests.” <span>Illustrative: who does what, not a timing benchmark.</span></figcaption>
+
+      <div class="lane-set">
+        <h3>Orchestrator-based</h3>
+        <div class="lane"><div class="who-l">Manager</div><div class="track">
+          <span class="blk coord" style="--s:1;--e:4">Plan the request</span>
+          <span class="blk coord" style="--s:4;--e:6">Brief &amp; route</span>
+          <span class="blk idle" style="--s:6;--e:11">Waits for reports</span>
+          <span class="blk coord" style="--s:11;--e:13">Merge, reply</span>
+        </div></div>
+        <div class="lane"><div class="who-l">Worker A</div><div class="track">
+          <span class="blk read" style="--s:6;--e:7">Brief</span>
+          <span class="blk code" style="--s:7;--e:11">Fix the bug</span>
+        </div></div>
+        <div class="lane"><div class="who-l">Worker B</div><div class="track">
+          <span class="blk read" style="--s:6;--e:7">Brief</span>
+          <span class="blk code" style="--s:7;--e:11">Write tests</span>
+        </div></div>
+      </div>
+
+      <div class="lane-set lead">
+        <h3>Super Agent · leader-based</h3>
+        <div class="lane"><div class="who-l">Lead <em>♛</em></div><div class="track">
+          <span class="blk code" style="--s:1;--e:3">Read the code</span>
+          <span class="blk hand" style="--s:3;--e:4">Hand off</span>
+          <span class="blk code" style="--s:4;--e:10">Fix the bug, in its own session</span>
+          <span class="blk code" style="--s:10;--e:11">Reply</span>
+        </div></div>
+        <div class="lane"><div class="who-l">Teammate</div><div class="track">
+          <span class="blk code" style="--s:4;--e:10">Write tests, same folder</span>
+        </div></div>
+        <div class="lane ghost"><div class="who-l">Manager</div><div class="track"><span class="none">none</span></div></div>
+      </div>
+
+      <ul class="legend">
+        <li><i class="code"></i>Working on your code</li>
+        <li><i class="hand"></i>Handing off a piece</li>
+        <li><i class="coord"></i>Coordination only</li>
+        <li><i class="read"></i>Reading a brief</li>
+        <li><i class="idle"></i>Waiting</li>
+      </ul>
+    </figure>
+
+    <dl class="diff">
+      <div><dt>Who leads</dt><dd><s>A manager that plans and routes</s><span>A coding agent that also does the work</span></dd></div>
+      <div><dt>First action</dt><dd><s>Often a planning step</s><span>The lead opens your code</span></dd></div>
+      <div><dt>Small tasks</dt><dd><s>Usually still pass through the manager</s><span>The lead just does them, no handoff</span></dd></div>
+      <div><dt>Context</dt><dd><s>Workers often start from a brief</s><span>The lead keeps its own session, turn after turn</span></dd></div>
+      <div><dt>Extra model</dt><dd><s>A manager whose calls use usage too</s><span>None: every agent on the team writes code</span></dd></div>
+      <div><dt>New message while busy</dt><dd><s>Goes through the manager</s><span>A free agent picks it up and leads it</span></dd></div>
+    </dl>
+  </div>
+</section>
+
+<section id="always-on" class="sec band">
+  <div class="wrap two">
+    <div class="sec-head stack">
+      <p class="num">02</p>
+      <h2>Your workstation, from anywhere.</h2>
+      <p class="sub">Pair a Telegram bot and the whole team is in your pocket. Leave Super Agent running on your workstation and keep working from your phone: on the bus, in a meeting, from bed.</p>
+      <ul class="plain">
+        <li><b>Send work</b> as text, photos, files or voice notes. Voice is transcribed locally with Whisper.</li>
+        <li><b>Follow live progress:</b> who is working, for how long, on what.</li>
+        <li><b>Approve</b> permission requests with a tap.</li>
+        <li><b>Get results back:</b> screenshots, previews and videos arrive in the chat.</li>
+        <li><b>Browse your workspace,</b> switch threads and change the lead.</li>
+        <li><b>Private:</b> only your paired chat can talk to the agents. Nothing on your machine has to be reachable from the internet.</li>
+      </ul>
+      <p class="sub small-sub"><b>Always On Agent.</b> Works with Super Agent running in VS Code on your Windows or Linux workstation. On Linux you can also run it as a standalone service, so the team stays on even with VS Code closed.</p>
+      <a class="more" href="https://github.com/touhid314/super-agent/blob/main/docs/linux-server.md">Standalone server setup →</a>
+    </div>
+    <div class="tg" role="img" aria-label="Example Telegram conversation with Super Agent">
+      <div class="tg-top">Super Agent bot</div>
+      <p class="b me">Add rate limiting to the API and send me a screenshot of the dashboard</p>
+      <p class="b">Working · 2m 10s<br>♛ Claude Code: middleware and tests<br>Codex: dashboard screenshot</p>
+      <p class="b">Codex wants to run <u>npm install express-rate-limit</u><br>[ Allow ] [ Deny ]</p>
+      <p class="b me">Allow</p>
+      <p class="b">Done. Rate limiting added, tests pass.<br><u>dashboard.png</u></p>
+    </div>
+  </div>
+</section>
+<section id="limits" class="sec">
+  <div class="wrap two">
+    <div class="sec-head stack">
+      <p class="num">03</p>
+      <h2>A usage limit doesn't stop the work.</h2>
+      <p class="sub">When the working agent runs out, a free teammate continues where it stopped. The one that ran out rests until its limit resets, then rejoins.</p>
+    </div>
+    <ol class="steps">
+      <li><span>Same agent, another account</span>Claude Code account 1 → account 2 continues the exact same session.</li>
+      <li><span>Different agent</span>Claude Code → Codex receives the previous agent's session: messages, tool calls and outputs.</li>
+      <li><span>Who goes next</span>The free agent with the most usage left.</li>
+      <li><span>Always visible</span>5-hour and weekly usage for every account, and when each resets.</li>
+    </ol>
+  </div>
+</section>
+
+<section class="sec band">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="num">04</p>
+      <div><h2>Start with one account. Add teammates later.</h2></div>
+    </div>
+    <div class="setups">
+      <article><h3>One account</h3><p>The VS Code panel, usage meters, Telegram control, thread history, and files marked in the Explorer with the agent that changed them.</p></article>
+      <article><h3>Several accounts, one agent</h3><p>Two Claude Code logins on one team. When one runs out, the other continues the same session.</p></article>
+      <article><h3>Every agent</h3><p>Claude Code, Codex and Antigravity together. Choose who leads and which model each one runs.</p></article>
+    </div>
+  </div>
+</section>
+
+
+<section class="sec">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="num">05</p>
+      <div><h2>Built into VS Code.</h2></div>
+    </div>
+    <ul class="features">
+      <li><b>Live output.</b> See what each agent is doing, or open the full log.</li>
+      <li><b>Threads that survive restarts.</b> An interrupted thread picks up on your next message.</li>
+      <li><b>The lead's own commands.</b> Type <code>/</code> for its slash commands and skills, plus <code>/model</code> and <code>/effort</code>.</li>
+      <li><b>Browser tools.</b> Agents can navigate, click and screenshot pages with Playwright.</li>
+      <li><b>One-click setup.</b> Installs the official CLIs. No admin rights or Node.js needed.</li>
+      <li><b>Remote SSH.</b> Install it on the Linux host and use it as usual.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="faq" class="sec band">
+  <div class="wrap narrow">
+    <h2>FAQ</h2>
+    <details><summary>What is Super Agent?</summary><p>A free VS Code extension that puts Claude Code, Codex and Antigravity, with as many accounts of each as you like, behind one panel and lets them work as one team in your workspace.</p></details>
+    <details><summary>What does leader-based multi-agent mean?</summary><p>There is no separate orchestrator or manager agent. One real coding agent leads your request and starts working immediately. It hands only independent pieces to free teammates, who work in parallel in the same folder.</p></details>
+    <details><summary>Do I need several accounts?</summary><p>No. Super Agent works with a single account. Add more accounts of the same agent, or other agents, whenever you want teammates and automatic hand-over at usage limits.</p></details>
+    <details><summary>What happens when an agent hits its usage limit?</summary><p>A free teammate continues where it stopped. Between accounts of the same CLI it continues the exact same session; across CLIs it receives the previous agent's full transcript. The agent that ran out rejoins when its limit resets.</p></details>
+    <details><summary>Can I use it away from my computer?</summary><p>Yes. Pair a Telegram bot and use the team from your phone: send requests, follow progress, approve actions and receive files, while Super Agent runs on your workstation.</p></details>
+    <details><summary>Can it run all the time?</summary><p>Yes. It keeps working as long as Super Agent runs on your Windows or Linux workstation, and you reach it from Telegram. On Linux, a documented standalone service keeps it running even with VS Code closed.</p></details>
+    <details><summary>How much does it cost?</summary><p>Super Agent is free. You bring your own Claude, ChatGPT or Google accounts; each provider's plans, costs and usage limits apply.</p></details>
+  </div>
+</section>
+
+<section class="end">
+  <div class="wrap end-in">
+    <h2>Assemble your team.</h2>
+    <a class="btn" href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">Install Super Agent</a>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span>© 2026 Touhidul Islam · <a href="https://github.com/touhid314/super-agent/blob/main/LICENSE">CC BY-NC 4.0</a> · <a href="https://github.com/touhid314/super-agent">GitHub</a> · <a href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">Marketplace</a></span>
+    <span>Claude Code, Codex and Antigravity are products of Anthropic, OpenAI and Google. Super Agent is independent and not affiliated with them.</span>
+  </div>
+</footer>
+</body>
+</html>

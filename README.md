@@ -4,6 +4,7 @@
 
 <p align="center">
   <b>One agent leads, the team helps.</b><br>
+  <b>The Avengers of coding agents: Claude Code, Codex and Antigravity as one team.</b><br>
   Super Agent turns every coding-agent login you have into a single team that works in your VS Code workspace,<br>
   and keeps working when one of them runs out of usage.
 </p>
@@ -12,6 +13,10 @@
   <a href="https://marketplace.visualstudio.com/items?itemName=touhidul-islam.super-agent-touhid">
     <img src="https://img.shields.io/badge/VS%20Code%20Marketplace-Install-4f46e5" alt="VS Code Marketplace">
   </a>
+</p>
+
+<p align="center">
+  <a href="https://touhid314.github.io/super-agent/">Visit the Super Agent website</a>
 </p>
 
 ---
@@ -23,7 +28,7 @@
 3. Open the Super Agent panel in the Activity Bar, click **+** to add an account and sign in. Add as many accounts as you have.
 4. Open a folder and ask the team for anything.
 
-For an **always-on Linux server controlled from your phone**, use the [standalone server and systemd setup](docs/linux-server.md). It keeps running independently of VS Code and relays messages, progress, and permission requests through Telegram. Microphone dictation is available in local Windows workspaces.
+For an **always-on agent on your own Linux server, controlled from Telegram**, use the [standalone server and systemd setup](docs/linux-server.md). It keeps running independently of VS Code and relays messages, progress, and permission requests through Telegram. Microphone dictation is available in local Windows workspaces.
 
 ## Why Super Agent
 
@@ -35,6 +40,28 @@ Coding agents are great until you hit a usage limit in the middle of a task, or 
 | 🔁 **Never stuck on a limit** | When the working agent runs out of usage, a free teammate picks up exactly where it stopped, with the full context. |
 | 📱 **Your workstation, from your phone** | Pair a Telegram bot and talk to the team, browse your workspace and follow live progress from anywhere. |
 | 📊 **Usage at a glance** | Usage left for every account, 5-hour and weekly, and when each limit resets. |
+
+## Leader-based, not orchestrator-based
+
+Many multi-agent setups put a separate manager or orchestrator agent on top to plan and route work. Super Agent has **no separate orchestrator agent**: a working coding agent leads, starts on the task itself, keeps its own session, and hands only independent pieces to free teammates in the same folder. The lead still coordinates the work; the distinction is that there is no separate manager model.
+
+| | Separate-manager setups often... | Super Agent |
+|---|---|---|
+| **Who's in charge** | Put a dedicated manager above the workers. | A working coding agent leads the request. |
+| **First action** | Start with a manager planning or routing the request. | The lead starts on the task itself and can delegate independent pieces. |
+| **Small tasks** | Route through the manager, which may handle them directly or delegate. | The lead can finish them itself; a teammate is optional. |
+| **Context** | Keep manager and worker sessions separate; shared history varies by setup. | The lead keeps its own session across turns; teammates receive scoped tasks. |
+| **Handoffs** | Use manager-to-worker assignments and reports. | The working lead writes a task and file ownership for a free teammate, then reviews its report. |
+| **Separate manager model** | Use a dedicated manager model for coordination. | No separate manager model; the coding agent also leads. |
+| **A message while busy** | Route it according to the manager's queue or concurrency policy. | A free agent leads the new request in its own thread; if none is free, it waits. |
+
+For example: **"Fix the login bug and add tests."** The lead fixes the bug while a free teammate writes tests against the agreed behavior, working in separate files in the same folder.
+
+### Any setup
+
+- **One account:** use the panel, usage meters, Telegram, thread history and Explorer marks with a single coding agent.
+- **Several accounts of the same agent:** same-CLI hand-over can continue the same session on another account, subject to provider rules and usage limits.
+- **A mixed team:** supported coding agents can lead and help with independent pieces in the same folder.
 
 ## Supported agents
 

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://touhid314.github.io/super-agent/sitemap.xml

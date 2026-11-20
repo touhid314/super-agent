@@ -182,3 +182,13 @@ details p { color: var(--ink2); margin: 10px 0 0; }
   .ctas .btn { width: 100%; text-align: center; }
   .msg.you { margin-left: 24px; }
 }
+
+/* Icons */
+.ic { color: var(--accent); flex: none; display: block; }
+.facts-grid .ic { margin-bottom: 10px; width: 26px; height: 26px; }
+.plain.icons { list-style: none; padding-left: 0; gap: 12px; }
+.plain.icons li { position: relative; padding-left: 34px; }
+.plain.icons li .ic { position: absolute; left: 0; top: 3px; }
+.steps li { padding-left: 92px; }
+.steps .step-ic { position: absolute; left: 44px; top: 22px; }
+.setups .card-ic { width: 28px; height: 28px; margin-bottom: 14px; }

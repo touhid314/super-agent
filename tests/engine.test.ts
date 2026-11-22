@@ -325,6 +325,25 @@ describe('coordination with minimal friction', () => {
     expect(msgs(t, 'agent')).toEqual(['done by b']);
     expect(t.retried).toBeUndefined();
   });
+  it('a temporary service error with no one else free: the same agent tries once more', async () => {
+    let n = 0;
+    const h = setup([acc('a', 'codex', 'master')], async () =>
+      ++n === 1 ? { ...ok('', 'sa'), finalText: '', code: 1, error: 'workspace routing discovery failed' } : ok('hello!', 'sa'),
+    );
+    const t = h.engine.send(undefined, 'hi', h.cwd);
+    await h.idle(() => msgs(t, 'agent').length > 0);
+    expect(h.runs.map((r) => r.account.id)).toEqual(['a', 'a']);
+    expect(msgs(t, 'system').join(' ')).toContain('a hit a temporary service error (workspace routing discovery failed); trying again.');
+    expect(msgs(t, 'agent')).toEqual(['hello!']);
+  });
+
+  it('other failures with no one else free still stop and ask (no retry loop)', async () => {
+    const h = setup([acc('a', 'codex', 'master')], async () => ({ ...ok('', 'sa'), finalText: '', code: 1, error: 'invalid prompt' }));
+    const t = h.engine.send(undefined, 'hi', h.cwd);
+    await h.idle(() => msgs(t, 'system').length > 0);
+    expect(h.runs).toHaveLength(1);
+    expect(msgs(t, 'system').at(-1)).toContain('stopped without an answer (invalid prompt). Send a message to continue.');
+  });
 });
 
 describe('the whole team, and one final answer', () => {
@@ -577,6 +596,55 @@ describe('conversations are kept on disk', () => {
     const e = new Engine({ ...deps(dir), onChange: () => { throw new ReferenceError("Cannot access 'eng' before initialization"); } });
     expect(e.get('t1')?.status).toBe('idle');
     expect(e.get('t1')?.messages.map((m) => m.text)).toEqual(['go', 'Interrupted (VS Code was closed). Send "continue" to pick up from where it stopped.']);
+  });
+
+  it('renames a conversation without losing its messages or session, and persists it across reloads', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-rename-'));
+    const e = new Engine(deps(dir));
+    const t = e.send(undefined, 'original question', dir);
+    await until(() => t.status === 'idle');
+    const session = t.session;
+    const messages = [...t.messages];
+    const lastUsed = t.updatedAt;
+    e.renameThread(t.id, '  Exam   preparation  ');
+    expect(t.title).toBe('Exam preparation');
+    expect(t.session).toEqual(session);
+    expect(t.messages).toEqual(messages);
+    expect(t.updatedAt).toBe(lastUsed);
+    e.renameThread(t.id, '   ');
+    expect(t.title).toBe('Exam preparation');
+    expect(() => e.renameThread('missing', 'Anything')).not.toThrow();
+    e.dispose();
+    const reloaded = new Engine(deps(dir));
+    expect(reloaded.get(t.id)?.title).toBe('Exam preparation');
+    expect(reloaded.get(t.id)?.messages).toEqual(messages);
+    reloaded.dispose();
+  });
+
+  it('keeps a user-chosen New thread title when the first message arrives', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-rename-'));
+    const e = new Engine(deps(dir));
+    const t = e.newThread(dir);
+    e.renameThread(t.id, 'New thread');
+    e.send(t.id, 'do not use this as the title', dir);
+    await until(() => t.status === 'idle');
+    expect(t.title).toBe('New thread');
+    e.dispose();
+  });
+
+  it('deleting a running conversation discards late completion and queued follow-ups', async () => {
+    let finish!: (result: RunResult) => void;
+    const h = setup([acc('a', 'codex', 'master')], () => new Promise<RunResult>((resolve) => { finish = resolve; }), { cancelRun: () => undefined });
+    const t = h.engine.send(undefined, 'work', h.cwd);
+    await h.idle(() => !!finish);
+    h.engine.send(t.id, 'queued follow-up', h.cwd, [], 'queue');
+    h.engine.deleteThread(t.id);
+    finish(ok('late answer', 's'));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.engine.get(t.id)).toBeUndefined();
+    expect(h.runs).toHaveLength(1);
+    expect(h.finished).toEqual([]);
+    h.engine.dispose();
   });
 
   it("deleting a conversation also deletes its helpers' threads (and theirs)", () => {

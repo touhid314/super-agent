@@ -6,6 +6,7 @@ import { CopyButton, Markdown } from './components/Markdown';
 import { useSlashMenu } from './components/SlashMenu';
 import type { RunChanges, Thread } from '../engine/types';
 import { TelegramCard, type TelegramView } from './telegram';
+import type { MarkdownImages } from '../markdown-images';
 
 declare function acquireVsCodeApi(): { postMessage(m: unknown): void; getState(): any; setState(s: any): void };
 const vscode = acquireVsCodeApi();
@@ -21,6 +22,7 @@ interface State {
   soundOnDone: boolean;
   autonomy?: 'standard' | 'auto' | 'full';
   fileUris: Record<string, string>;
+  markdownImages?: Record<string, MarkdownImages>;
   telegram: TelegramView;
   models: Record<string, { id: string; name: string; isDefault: boolean }>;
 }
@@ -80,6 +82,17 @@ function resetsIn(ts?: number): string {
 
 // ---------------------------------------------------------------- app
 
+function ThreadActions({ id }: { id: string }) {
+  return <span className="thread-actions">
+    <button type="button" title="Rename thread" aria-label="Rename thread" onClick={() => send({ type: 'renameThread', threadId: id })}>
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14Z" /></svg>
+    </button>
+    <button type="button" title="Delete thread" aria-label="Delete thread" onClick={() => send({ type: 'deleteThread', threadId: id })}>
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>
+    </button>
+  </span>;
+}
+
 function App() {
   const [state, setState] = useState<State | null>(null);
   const [selected, setSelected] = useState<string | null>(vscode.getState()?.selected ?? null);
@@ -137,6 +150,7 @@ function App() {
       }
       else if (m.type === 'selected') setSelected(m.threadId);
       else if (m.type === 'newThread') setSelected(null);
+      else if (m.type === 'threadsDeleted') setSelected((id) => m.ids.includes(id) ? null : id);
       else if (m.type === 'showTelegram') setOverlay('telegram');
       else if (m.type === 'attached') {
         setAttachments((a) => [...a, ...m.files.filter((f: string) => !a.includes(f))]);
@@ -281,6 +295,12 @@ function App() {
           feedPinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
+        {thread && (
+          <div className="thread-heading">
+            <span title={thread.title}>{thread.title}</span>
+            <ThreadActions id={thread.id} />
+          </div>
+        )}
         {parents.length > 0 && (
           <nav className="crumbs">
             <button className="back" title="Back to the thread this one helps" onClick={() => setSelected(parents.at(-1)!.id)}>
@@ -305,18 +325,21 @@ function App() {
               <div className="recent">
                 <div className="recent-head">
                   <span>Recent conversations</span>
-                  <a className="opt" onClick={() => send({ type: 'showHistory' })}>
+                  <button type="button" className="opt thread-history" onClick={() => send({ type: 'showHistory' })}>
                     All
-                  </a>
+                  </button>
                 </div>
                 {recent.map((t) => (
-                  <button key={t.id} className="recent-row" onClick={() => setSelected(t.id)}>
-                    <span className="recent-title">
-                      {t.status !== 'idle' && <span className="dot" />}
-                      {t.title}
-                    </span>
-                    <span className="muted">{when(t.updatedAt)}</span>
-                  </button>
+                  <div key={t.id} className="recent-row">
+                    <button className="recent-open" onClick={() => setSelected(t.id)}>
+                      <span className="recent-title">
+                        {t.status !== 'idle' && <span className="dot" />}
+                        <span className="recent-name" title={t.title}>{t.title}</span>
+                      </span>
+                      <span className="muted">{when(t.updatedAt)}</span>
+                    </button>
+                    <ThreadActions id={t.id} />
+                  </div>
                 ))}
               </div>
             )}
@@ -387,7 +410,7 @@ function App() {
                 {acc(m.accountId) && <Logo kind={acc(m.accountId)!.kind} />}
                 <span>{modelName(m.accountId)}</span>
               </div>
-              <Markdown text={m.text} onLink={openLink} />
+              <Markdown text={m.text} onLink={openLink} images={state.markdownImages?.[thread!.id]} />
               <div className="stamp">
                 {when(m.at)}
                 <CopyButton text={m.text} />
@@ -419,7 +442,7 @@ function App() {
               {acc(thread.leadId) && <Logo kind={acc(thread.leadId)!.kind} />}
               <span>{modelName(thread.leadId)}</span>
             </div>
-            <Markdown text={speaking} onLink={openLink} />
+            <Markdown text={speaking} onLink={openLink} images={state.markdownImages?.[thread.id]} />
           </div>
         )}
         {/* The agent replied but left work running in the background: it picks up by itself when that ends. */}

@@ -95,8 +95,13 @@ i.week { background: #58a6ff; }
 .copy-code:hover { color: var(--vscode-foreground); background: var(--soft); }
 .copy-code.done { color: #3fb950; opacity: 1; }
 .md :not(pre) > code { background: var(--soft); padding: 1px 4px; border-radius: 4px; }
-.md a { color: var(--accent); text-decoration: none; cursor: pointer; }
-.md a:hover { text-decoration: underline; }
+.md a { color: var(--vscode-textLink-foreground, #3794ff); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: pointer; overflow-wrap: anywhere; }
+.md a code { color: inherit; }
+.md a:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007fd4); outline-offset: 3px; border-radius: 2px; }
+.md img { display: block; max-width: 100%; height: auto; margin: 8px 0; border-radius: 6px; }
+.md img[data-local-file] { cursor: zoom-in; }
+.md img[data-local-file]:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+.md a:hover, .md a:active { color: var(--vscode-textLink-activeForeground, #4daafc); text-decoration-thickness: 2px; }
 .md hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
 .md blockquote { border-left: 3px solid var(--line); padding-left: 10px; color: var(--vscode-descriptionForeground); }
 .md table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; overflow-wrap: normal; }
@@ -351,3 +356,17 @@ i.week { background: #58a6ff; }
 .approval-actions .primary { border: none; border-radius: 999px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
 .approval-actions .primary:hover { background: var(--vscode-button-hoverBackground); }
 .approval-actions .primary:disabled { opacity: 0.5; cursor: default; }
+
+/* Conversation management: actions stay available on touch and keyboard. */
+.thread-heading { display: flex; align-items: center; gap: 8px; min-width: 0; border-bottom: 1px solid var(--line); padding-bottom: 8px; font-size: 12px; }
+.thread-heading > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.thread-actions { display: inline-flex; flex: none; gap: 2px; }
+.thread-actions button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: var(--vscode-descriptionForeground); }
+.thread-actions button:hover { background: var(--soft); color: var(--vscode-foreground); }
+.thread-actions button:focus-visible, .recent-open:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.recent-row { align-items: center; gap: 4px; padding: 0 4px 0 0; cursor: default; }
+.recent-open { display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 7px 10px; border: 0; background: transparent; cursor: pointer; text-align: left; font: inherit; }
+
+.recent-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-history { border: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; }
+.thread-history:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }

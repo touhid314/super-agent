@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { AgentKind } from '../types';
 import { log } from '../log';
 import { CLI_META, commandLine } from './cli';
@@ -28,6 +30,7 @@ export class CliUpdater {
   constructor(
     private cliPath: (kind: AgentKind) => string | null,
     private hooks: { before?(kind: AgentKind): void; after?(kind: AgentKind, r: UpdateResult): void } = {},
+    private platform: NodeJS.Platform = process.platform,
   ) {}
 
   update(kind: AgentKind): Promise<UpdateResult> {
@@ -44,8 +47,19 @@ export class CliUpdater {
     const name = CLI_META[kind].name;
     if (!cli) return { ok: false, error: `${name} is not installed` };
     const from = await version(cli);
+    // Installed for all users (e.g. npm -g into root-owned /usr): its updater can only fail without sudo, and the
+    // agents would be restarted for nothing (losing their warm start).
+    const locked = this.platform !== 'win32' ? notWritable(cli) : undefined;
+    if (locked) {
+      const error = `${name} is installed in ${locked}, which this user can't write to: update it there yourself (e.g. with sudo)`;
+      log('update', `skipped: ${error}`);
+      return { ok: false, from, error };
+    }
     log('update', `updating ${name} (${from ?? 'version unknown'})`);
-    this.hooks.before?.(kind);
+    // Windows locks a running program's files, so its agents stop for the update. Elsewhere they keep running and
+    // are only replaced when a new version actually arrived.
+    const windows = this.platform === 'win32';
+    if (windows) this.hooks.before?.(kind);
     let r: UpdateResult;
     try {
       const out = await exec(cli, ['update'], 5 * 60000);
@@ -56,8 +70,24 @@ export class CliUpdater {
       r = { ok: false, from, error: (err as Error).message.trim().split(/\r?\n/).filter(Boolean).pop()?.slice(0, 300) };
       log('update', `${name} update failed: ${r.error}`);
     }
-    this.hooks.after?.(kind, r);
+    if (windows || (r.ok && r.from !== r.to)) this.hooks.after?.(kind, r);
     return r;
+  }
+}
+
+/** The folder a CLI is really installed in (symlinks followed), when this user can't write to it. */
+function notWritable(cli: string): string | undefined {
+  try {
+    const dir = path.dirname(fs.realpathSync(cli));
+    fs.accessSync(dir, fs.constants.W_OK);
+    return undefined;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EACCES' && (err as NodeJS.ErrnoException).code !== 'EPERM') return undefined;
+    try {
+      return path.dirname(fs.realpathSync(cli));
+    } catch {
+      return undefined;
+    }
   }
 }
 

@@ -14,6 +14,10 @@ import { OUTDATED, type UpdateResult } from '../core/agents/updater';
 import { UNDO_TURNS, type ChangeTracker } from './changes';
 import { parseCommand } from '../core/agents/commands';
 
+/** Errors from a provider's service or the network that usually pass on their own (worth one more try). */
+export const TRANSIENT =
+  /routing discovery failed|stream disconnected|error sending request|connection (reset|refused|closed)|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|\b50[234]\b|overloaded|service unavailable|temporarily unavailable|internal server error/i;
+
 /** Marks a queued prompt as a slash command (sent as typed, see sendCommand); never part of anything the user types. */
 const CMD = '\u0000cmd\u0000';
 
@@ -299,6 +303,16 @@ export class Engine {
     this.sys(t, accountId ? `${this.label(accountId)} will lead this thread from the next message, with the full context.` : 'Lead: automatic.');
   }
 
+  /** Rename only the display title; the conversation and agent session stay intact. */
+  renameThread(threadId: string, title: string): void {
+    const t = this.get(threadId);
+    const name = title.replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!t || !name || (t.title === name && t.customTitle)) return;
+    t.title = name;
+    t.customTitle = true;
+    this.changed();
+  }
+
   /** Deletes a conversation together with its helpers' threads (they are part of it). */
   deleteThread(threadId: string): void {
     const gone = new Set([threadId]);
@@ -306,8 +320,17 @@ export class Engine {
       grew = false;
       for (const t of this.threads) if (t.parentId && gone.has(t.parentId) && !gone.has(t.id)) (gone.add(t.id), (grew = true));
     }
-    for (const id of gone) this.stop(id);
+    const removed = this.threads.filter((t) => gone.has(t.id));
+    // Remove the entire tree before cancellation can release a waiting lead or helper.
     this.threads = this.threads.filter((t) => !gone.has(t.id));
+    for (const t of removed) {
+      t.queue = [];
+      t.pending = undefined;
+      this.cancelAsks(t);
+      if (t.runId) this.d.cancelRun(t.runId);
+      this.live.delete(t.id);
+      this.snaps.delete(t.id);
+    }
     this.pump(); // a lead waiting only on deleted helpers is released
     this.changed();
   }
@@ -481,6 +504,7 @@ export class Engine {
   }
 
   private schedule(t: Thread, prompt: string, preferred?: Account): void {
+    if (this.get(t.id) !== t) return; // delayed retries cannot revive deleted threads
     if (prompt.startsWith(CMD)) {
       // A slash command belongs to one CLI's conversation: it runs on that agent or not at all (no waiting, no hand-over).
       const target = preferred ?? this.commandAccount(t);
@@ -557,7 +581,7 @@ export class Engine {
   /** `attach`: take over the turn the agent started by itself (see `wake`): no prompt is sent. */
   private async start(t: Thread, acc: Account, prompt: string, attach = false): Promise<void> {
     const cli = this.d.cliPath(acc.kind);
-    if (!cli) return;
+    if (!cli || this.get(t.id) !== t) return;
     // Work moving away from an agent that is out of usage is always announced (here, in one place). When it is the
     // lead you chose (crowned, or pinned on this thread), the agent taking over becomes the lead.
     // A slash command is sent exactly as typed: anything before it would make it plain text to the CLI.
@@ -635,7 +659,9 @@ export class Engine {
     let res: RunResult;
     try {
       await this.snaps.get(t.id); // the agent may only touch files once the "before" picture is taken
-      res = await this.d.runAgent({
+      res = this.get(t.id) !== t
+        ? { code: null, finalText: '', rateLimited: false, cancelled: true, timedOut: false }
+        : await this.d.runAgent({
         runId,
         account: acc,
         cliPath: cli,
@@ -646,6 +672,7 @@ export class Engine {
         logFile: t.lastLog,
         timeoutMs: this.d.config.settings.taskTimeoutMin * 60000,
         onText: (text) => {
+          if (this.get(t.id) !== t) return;
           parser.feed(text);
           this.d.onOutput(t.id, text);
           this.queueSave();
@@ -653,13 +680,20 @@ export class Engine {
         resume,
         browser: true, // a standard tool: every agent can open pages, click, fill forms and take screenshots
         attach,
-        onApproval: (ask) => this.askUser(t, ask),
+        onApproval: (ask) => this.get(t.id) === t ? this.askUser(t, ask) : Promise.resolve('cancel'),
         command: command ? parseCommand(command) : undefined,
       });
     } finally {
       this.cancelAsks(t);
       this.d.pool.release(acc.id);
       this.lastWork.set(acc.id, Date.now()); // free since now: whoever has waited longest gets the next task
+    }
+    // A cancelled runner may still deliver a late answer. Deleted conversations must not
+    // notify the user, report to their parent, or schedule any follow-up work.
+    if (this.get(t.id) !== t) {
+      this.live.delete(t.id);
+      this.snaps.delete(t.id);
+      return this.pump();
     }
     t.runId = undefined;
     t.waitingOn = res.background?.length ? res.background : undefined;
@@ -723,6 +757,7 @@ export class Engine {
       this.sys(t, `${acc.label} failed: ${res.error}`);
       this.sys(t, `Updating ${name}…`);
       void this.d.updateCli(acc.kind).then((r) => {
+        if (this.get(t.id) !== t) return;
         t.status = 'idle';
         if (r.ok) {
           this.sys(t, `${name} updated${r.from && r.to && r.from !== r.to ? ` (${r.from} → ${r.to})` : ''}. Trying again.`);
@@ -741,7 +776,17 @@ export class Engine {
       const why = res.timedOut ? 'timed out' : res.error ?? `exit code ${res.code}`;
       // One automatic retry on a different agent, so a flaky run doesn't leave the work (or a waiting lead) stuck.
       const next = t.retried ? undefined : this.free().find((a) => a.id !== acc.id);
-      if (next) {
+      // A passing service or network hiccup (the provider's backend, not the work): the same agent tries once more.
+      const again = !next && !t.retried && !res.timedOut && !!res.error && TRANSIENT.test(res.error);
+      if (again) {
+        t.retried = true;
+        this.sys(t, `${acc.label} hit a temporary service error (${why}); trying again.`);
+        setTimeout(() => {
+          this.schedule(t, prompt, acc);
+          this.changed();
+          this.pump();
+        }, 3000);
+      } else if (next) {
         t.retried = true;
         this.sys(t, `${acc.label} stopped without an answer (${why}), so ${next.label} takes over with the full context.`);
         this.schedule(t, `The previous agent stopped without finishing. Do this request from the start, checking what is already done:\n\n${prompt}`, next);
@@ -847,9 +892,12 @@ Continue the task.`;
     const request = fs.readFileSync(file, 'utf8').trim();
     if (!request) return;
     // The sub-folder names the thread that asked; a file dropped straight into handoff/ goes to the latest lead.
-    const lead =
-      this.get(path.basename(path.dirname(file))) ??
-      this.threads.filter((x) => x.cwd === cwd && x.status === 'working' && !x.helperFile).sort((a, b) => (b.runStartedAt ?? 0) - (a.runStartedAt ?? 0))[0];
+    const folder = path.basename(path.dirname(file));
+    const lead = folder === 'handoff'
+      ? this.threads.filter((x) => x.cwd === cwd && x.status === 'working' && !x.helperFile).sort((a, b) => (b.runStartedAt ?? 0) - (a.runStartedAt ?? 0))[0]
+      : this.get(folder);
+    // A delayed scan must not attach a deleted conversation's hand-off to another lead.
+    if (folder !== 'handoff' && !lead) return;
     const title = request.split(/\r?\n/)[0].replace(/^#+\s*/, '').slice(0, 60) || path.basename(file, '.md');
     const owns = /files?[^\n]*:\s*([^\n]+)/i.exec(request)?.[1] ?? '';
     // Only teammates other than the lead's own agent can help; with none (all off or out), it would wait forever.
@@ -1126,7 +1174,7 @@ Team right now: free: ${free.map((a) => a.label).join(', ') || 'nobody'}${busy.l
     t.messages.push({ ...m, at: Date.now() });
     // "Last used": your messages and the agents' replies, not status notes (stopped, interrupted, …).
     if (m.role !== 'system') t.updatedAt = Date.now();
-    if (t.title === 'New thread' && m.role === 'user') t.title = titleOf(m.text);
+    if (!t.customTitle && t.title === 'New thread' && m.role === 'user') t.title = titleOf(m.text);
     this.changed();
   }
 

@@ -21,6 +21,7 @@ import { Engine } from './engine/engine';
 import { FileStore, TelegramRelay, uniqueIn } from './telegram';
 import { configureLog, log as trace } from './core/log';
 import { browserCommand, fileTarget } from './links';
+import { markdownImages } from './markdown-images';
 import { createVoice } from './voice';
 import { listModels, modelInfo, type ModelOption } from './engine/models';
 import type { Thread } from './engine/types';
@@ -476,6 +477,11 @@ export function activate(context: vscode.ExtensionContext): void {
         clis: accounts.clis,
         threads: eng.threads.map((t) => ({ ...t, messages: t.messages.slice(-150) })),
         fileUris: fileUris(eng.threads.flatMap((t) => t.messages.flatMap((m) => m.attachments ?? []))),
+        markdownImages: view ? Object.fromEntries(eng.threads.map(t => [t.id, markdownImages(
+          t.messages.slice(-150).map(m => m.text), t.cwd,
+          [path.join(paths.data, 'work'), ...(vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)],
+          file => view!.webview.asWebviewUri(vscode.Uri.file(file)).toString(),
+        )])) : {},
         workspace: cwd() ?? null,
         soundOnDone: config.settings.soundOnDone,
         autonomy: config.settings.autonomy,
@@ -639,16 +645,34 @@ export function activate(context: vscode.ExtensionContext): void {
         if (d.toDateString() === new Date().toDateString()) return `today ${time}`;
         return `${d.toLocaleDateString([], { month: 'short', day: 'numeric', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) })}, ${time}`;
       };
-      const items = eng.threads
+      const renameButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename thread' };
+      const deleteButton = { iconPath: new vscode.ThemeIcon('trash'), tooltip: 'Delete thread' };
+      const items = () => eng.threads
         .filter((t) => !t.parentId && t.messages.length > 0)
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((t) => ({
           label: `${t.status === 'working' ? '$(sync~spin) ' : t.status === 'waiting' ? '$(clock) ' : ''}${t.title}`,
           description: `started ${at(t.createdAt)} · last used ${at(t.updatedAt)}`,
           id: t.id,
+          buttons: [renameButton, deleteButton],
         }));
-      const pick = await vscode.window.showQuickPick(items, { placeHolder: items.length ? 'Open a thread' : 'No threads yet' });
-      if (pick) post({ type: 'selected', threadId: pick.id });
+      const picker = vscode.window.createQuickPick<ReturnType<typeof items>[number]>();
+      picker.items = items();
+      picker.placeholder = picker.items.length ? 'Open, rename or delete a thread' : 'No threads yet';
+      const listeners = [
+        picker.onDidAccept(() => {
+          const selected = picker.selectedItems[0];
+          if (selected && eng.get(selected.id)) post({ type: 'selected', threadId: selected.id });
+          picker.hide();
+        }),
+        picker.onDidTriggerItemButton(async ({ item, button }) => {
+          picker.hide();
+          if (button === renameButton) await renameThread(item.id);
+          else if (button === deleteButton) await deleteThread(item.id);
+        }),
+      ];
+      picker.onDidHide(() => { listeners.forEach((x) => x.dispose()); picker.dispose(); });
+      picker.show();
     }),
     vscode.commands.registerCommand('superAgent.exportThread', (threadId?: unknown) => exportConversation(typeof threadId === 'string' ? threadId : undefined)),
     vscode.commands.registerCommand('superAgent.addAccount', () => addAccount()),
@@ -659,6 +683,33 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => relay.stop() },
     { dispose: () => clearInterval(telegramTimer) },
   );
+
+  async function renameThread(threadId: string): Promise<void> {
+    const t = eng.get(threadId);
+    if (!t) return;
+    const name = await vscode.window.showInputBox({
+      title: 'Rename thread', value: t.title, prompt: 'Choose a name for this conversation',
+      validateInput: (value) => !value.trim() ? 'Enter a thread name.' : value.trim().length > 120 ? 'Use 120 characters or fewer.' : undefined,
+    });
+    if (name !== undefined && eng.get(threadId)) eng.renameThread(threadId, name);
+  }
+
+  async function deleteThread(threadId: string): Promise<void> {
+    const t = eng.get(threadId);
+    if (!t) return;
+    const answer = await vscode.window.showWarningMessage(`Delete "${t.title}"?`, {
+      modal: true,
+      detail: 'This permanently removes the conversation and its helper threads from Super Agent, and stops any agents working on them. Your project files are kept.',
+    }, 'Delete thread');
+    if (answer !== 'Delete thread' || !eng.get(threadId)) return;
+    const before = eng.threads.map((x) => x.id);
+    eng.deleteThread(threadId);
+    const deleted = before.filter((id) => !eng.get(id));
+    if (deleted.includes(context.workspaceState.get<string>('superAgent.openThread') ?? '')) {
+      void context.workspaceState.update('superAgent.openThread', undefined);
+    }
+    post({ type: 'threadsDeleted', ids: deleted });
+  }
 
   // ---------------------------------------------------------------- agent CLIs: first-run setup
   let installing: Promise<void> | undefined;
@@ -799,6 +850,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!t || !fs.existsSync(t.file)) return;
         const uri = vscode.Uri.file(t.file);
         if (fs.statSync(t.file).isDirectory()) return void vscode.commands.executeCommand('revealInExplorer', uri);
+        if (/\.(?:png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(t.file)) return void vscode.commands.executeCommand('vscode.open', uri);
         const selection = t.line ? new vscode.Range(t.line - 1, 0, (t.endLine ?? t.line) - 1, 0) : undefined;
         return void vscode.window.showTextDocument(uri, { preview: true, selection });
       }
@@ -811,8 +863,10 @@ export function activate(context: vscode.ExtensionContext): void {
         return eng.stop(m.threadId);
       case 'setLead':
         return eng.setLead(m.threadId, m.accountId);
+      case 'renameThread':
+        return void (typeof m.threadId === 'string' && renameThread(m.threadId));
       case 'deleteThread':
-        return eng.deleteThread(m.threadId);
+        return void (typeof m.threadId === 'string' && deleteThread(m.threadId));
       case 'toggleTeam':
         accounts.toggleTeam(m.id);
         return pushState();

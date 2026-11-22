@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import { useEffect, useMemo, useState } from 'react';
+import type { MarkdownImages } from '../../markdown-images';
 
 /**
  * Full CommonMark + GFM tables/strikethrough. Raw HTML is escaped (`html: false`), so agent text can't inject
@@ -9,6 +10,30 @@ import { useEffect, useMemo, useState } from 'react';
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 // markdown-it refuses file: links by default; agents cite files that way. Script URLs stay refused.
 md.validateLink = (url) => !/^\s*(javascript|vbscript|data):/i.test(url);
+const renderImage = md.renderer.rules.image!;
+md.renderer.rules.image = (tokens, index, options, env, renderer) => {
+  const token = tokens[index];
+  const src = token.attrGet('src') ?? '';
+  const local = (env as { images?: MarkdownImages } | undefined)?.images?.[src];
+  if (local) {
+    token.attrSet('src', local.uri);
+    token.attrSet('data-local-file', local.file);
+    token.attrSet('role', 'button');
+    token.attrSet('tabindex', '0');
+    token.attrSet('loading', 'lazy');
+  } else {
+    // An unresolved local path cannot load in a webview. Keep it usable as a
+    // file link instead of rendering a broken image icon. Remote images also
+    // remain links; the webview's existing content security policy stays intact.
+    const label = renderer.renderInlineAsText(token.children ?? [], options, env) || 'Open image';
+    return `<a href="${md.utils.escapeHtml(src)}">${md.utils.escapeHtml(label)}</a>`;
+  }
+  return renderImage(tokens, index, options, env, renderer);
+};
+
+export function renderMarkdown(text: string, images: MarkdownImages = {}): string {
+  return md.render(text, { images });
+}
 // Every code block gets a copy icon (as in Codex), fenced or indented; it turns into a check once copied.
 const COPY_ICON =
   '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/></svg>';
@@ -66,8 +91,8 @@ export function CopyButton({ text }: { text: string }) {
   );
 }
 
-export function Markdown({ text, onLink }: { text: string; onLink?: (url: string) => void }) {
-  const html = useMemo(() => md.render(text), [text]);
+export function Markdown({ text, onLink, images }: { text: string; onLink?: (url: string) => void; images?: MarkdownImages }) {
+  const html = useMemo(() => renderMarkdown(text, images), [text, images]);
   return (
     <div
       className="md"
@@ -75,11 +100,17 @@ export function Markdown({ text, onLink }: { text: string; onLink?: (url: string
       onClick={(e) => {
         const copy = (e.target as HTMLElement).closest<HTMLElement>('.copy-code');
         if (copy) return void copyBlock(copy);
+        const image = (e.target as HTMLElement).closest<HTMLElement>('img[data-local-file]');
+        if (image) { e.preventDefault(); return onLink?.(image.dataset.localFile!); }
         const a = (e.target as HTMLElement).closest('a');
         if (!a) return;
         e.preventDefault();
         const url = a.getAttribute('href') ?? '';
         if (url && !url.startsWith('#')) onLink?.(url);
+      }}
+      onKeyDown={(e) => {
+        const image = (e.target as HTMLElement).closest<HTMLElement>('img[data-local-file]');
+        if (image && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onLink?.(image.dataset.localFile!); }
       }}
     />
   );

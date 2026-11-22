@@ -39,6 +39,8 @@ export interface ThreadSession {
 export interface Thread {
   id: string;
   title: string;
+  /** A user-chosen title is never replaced by automatic first-message naming. */
+  customTitle?: boolean;
   cwd: string;
   /** Agent currently leading (or last led) this thread. */
   leadId?: string;

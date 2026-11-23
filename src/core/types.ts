@@ -16,6 +16,8 @@ export interface Account {
   label: string;
   /** Config home for this account. null = the CLI's default login (~/.codex, ~/.claude, Antigravity's own). */
   home: string | null;
+  /** Antigravity only: 'apiKey' runs agy with GEMINI_API_KEY + modelProvider=gemini instead of a Google login. */
+  auth?: 'account' | 'apiKey';
   role: AccountRole;
   model?: string;
   /** Reasoning effort (low · medium · high · xhigh · max); unset: the CLI's default. */

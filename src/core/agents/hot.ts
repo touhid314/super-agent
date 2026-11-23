@@ -353,7 +353,7 @@ export class HotAgents {
       fs.mkdirSync(path.dirname(b.configFile), { recursive: true });
       writeBrowserConfig(b.configFile, b.outputDir);
     }
-    const args = buildArgs({ kind: account.kind, mode, autonomy, cwd, model: account.model, effort: account.effort, lastMessageFile: '', resume, newSessionId, browser: b, dirs: [projectDir(cwd)] });
+    const args = buildArgs({ kind: account.kind, mode, autonomy, cwd, model: account.model, effort: account.effort, lastMessageFile: '', resume, newSessionId, browser: b, dirs: [projectDir(cwd)], apiKey: account.auth === 'apiKey' });
     // Standard: what its permission mode doesn't allow (e.g. editing outside the folder) is asked of us, and we ask you.
     const ask = mode === 'write' && autonomy === 'standard' ? ['--permission-prompt-tool', 'stdio'] : [];
     const streamArgs = claude ? ['--input-format', 'stream-json', '--replay-user-messages', ...ask, ...args] : [...args, '--input-format', 'stream-json', '-p='];

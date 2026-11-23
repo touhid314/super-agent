@@ -142,6 +142,7 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
     lastMessageFile,
     resume: req.resume,
     newSessionId: req.account.kind === 'claude' && !req.resume ? newSessionId : undefined,
+    apiKey: req.account.auth === 'apiKey',
   });
 
   const emit = (text: string) => {

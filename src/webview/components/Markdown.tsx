@@ -101,10 +101,13 @@ export function Markdown({ text, onLink, images }: { text: string; onLink?: (url
         const copy = (e.target as HTMLElement).closest<HTMLElement>('.copy-code');
         if (copy) return void copyBlock(copy);
         const image = (e.target as HTMLElement).closest<HTMLElement>('img[data-local-file]');
-        if (image) { e.preventDefault(); return onLink?.(image.dataset.localFile!); }
+        if (image) { e.preventDefault(); e.stopPropagation(); return onLink?.(image.dataset.localFile!); }
         const a = (e.target as HTMLElement).closest('a');
         if (!a) return;
         e.preventDefault();
+        // VS Code also opens anchor clicks at window level, even when default
+        // navigation was prevented. Keep our extension handler as the only opener.
+        e.stopPropagation();
         const url = a.getAttribute('href') ?? '';
         if (url && !url.startsWith('#')) onLink?.(url);
       }}

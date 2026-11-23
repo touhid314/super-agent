@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { Account, AgentKind, CliInfo, LoginState } from '../types';
 import type { ConfigStore } from '../store/config';
 import { newId, paths, readJson } from '../store/paths';
-import { CLI_META, commandLine, installCommand, loginArgs, resolveCli, accountEnv, quote } from './cli';
+import { CLI_META, commandLine, hasAccountApiKey, installCommand, loginArgs, resolveCli, accountEnv, quote } from './cli';
 import type { AccountPool } from './pool';
 import { runAgent } from './runner';
 
@@ -35,19 +35,27 @@ export class AccountService {
     return this.clis.find((c) => c.kind === kind)?.path ?? null;
   }
 
-  add(kind: AgentKind, label: string): Account {
-    if (kind === 'antigravity' && this.config.accounts.some((a) => a.kind === 'antigravity')) {
-      throw new Error('Antigravity keeps one Google login per machine, so only one Antigravity account can be on the team. To use a different Google account, click Re-login on it and switch with /logout and /login.');
+  add(kind: AgentKind, label: string, auth?: 'account' | 'apiKey'): Account {
+    if (kind === 'antigravity' && auth !== 'apiKey' && this.config.accounts.some((a) => a.kind === 'antigravity' && a.auth !== 'apiKey')) {
+      throw new Error('Antigravity keeps one Google login per machine, so only one signed-in Antigravity account can be on the team. To use a different Google account, sign out and sign in again — or add Antigravity with a Gemini API key.');
     }
     const id = newId();
     const home = kind === 'antigravity' ? null : paths.accountHome(id);
     if (home) fs.mkdirSync(home, { recursive: true });
     if (kind === 'codex' && home) prepareCodexHome(home);
+    const defaultLabel =
+      kind === 'antigravity' && auth === 'apiKey'
+        ? (() => {
+            const n = this.config.accounts.filter((a) => a.kind === 'antigravity' && a.auth === 'apiKey').length + 1;
+            return n === 1 ? 'Antigravity · API key' : `Antigravity · API key ${n}`;
+          })()
+        : `${CLI_META[kind].name} ${this.config.accounts.filter((a) => a.kind === kind).length + 1}`;
     const account: Account = {
       id,
       kind,
-      label: label.trim() || `${CLI_META[kind].name} ${this.config.accounts.filter((a) => a.kind === kind).length + 1}`,
+      label: label.trim() || defaultLabel,
       home,
+      ...(kind === 'antigravity' && auth === 'apiKey' ? { auth } : {}),
       role: this.config.master() ? 'worker' : 'master',
       createdAt: Date.now(),
     };
@@ -270,6 +278,9 @@ export function detectLogin(acc: Account): { login: LoginState; email?: string }
       const email = meta?.oauthAccount?.emailAddress as string | undefined;
       const creds = fs.existsSync(path.join(home, '.credentials.json'));
       return { login: creds || email ? 'signed-in' : 'signed-out', email };
+    }
+    if (acc.kind === 'antigravity' && acc.auth === 'apiKey') {
+      return { login: hasAccountApiKey(acc.id) ? 'signed-in' : 'signed-out' };
     }
     // Antigravity: agy keeps its login outside this folder; its state files only appear once it has been used/signed in.
     const used = fs.existsSync(path.join(home, 'jetski_state.pbtxt')) || fs.existsSync(path.join(home, 'conversations'));

@@ -296,3 +296,28 @@ describe('toolLabel', () => {
     expect(toolLabel('Bash')).toBe('Bash');
   });
 });
+
+describe('Antigravity GEMINI_API_KEY mode', () => {
+  it('passes modelProvider=gemini in --settings and injects GEMINI_API_KEY via accountEnv', async () => {
+    const { accountEnv, setAccountApiKey } = await import('../src/core/agents/cli');
+    const args = buildArgs({ ...base, mode: 'write', autonomy: 'standard', apiKey: true });
+    const settingsIdx = args.indexOf('--settings');
+    expect(settingsIdx).toBeGreaterThan(-1);
+    expect(JSON.parse(args[settingsIdx + 1])).toEqual({ permissions: { allow: ['command(*)'] }, modelProvider: 'gemini' });
+
+    const fullArgs = buildArgs({ ...base, mode: 'write', autonomy: 'full', apiKey: true });
+    const fullIdx = fullArgs.indexOf('--settings');
+    expect(fullIdx).toBeGreaterThan(-1);
+    expect(JSON.parse(fullArgs[fullIdx + 1])).toEqual({ modelProvider: 'gemini' });
+
+    setAccountApiKey('agy-key-1', 'test-gemini-key');
+    try {
+      const env = accountEnv({ id: 'agy-key-1', kind: 'antigravity', auth: 'apiKey', label: 'Antigravity · API key', home: null, role: 'worker', createdAt: 0 }, {});
+      expect(env.GEMINI_API_KEY).toBe('test-gemini-key');
+      const oauthEnv = accountEnv({ id: 'agy-oauth', kind: 'antigravity', label: 'Antigravity 1', home: null, role: 'worker', createdAt: 0 }, {});
+      expect(oauthEnv.GEMINI_API_KEY).toBeUndefined();
+    } finally {
+      setAccountApiKey('agy-key-1', undefined);
+    }
+  });
+});

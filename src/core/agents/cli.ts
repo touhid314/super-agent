@@ -77,11 +77,33 @@ export function resolveCli(kind: AgentKind, override?: string): CliInfo {
   return { kind, path: hit, version };
 }
 
-/** Environment that points the CLI at this account's own config home. */
+const apiKeys = new Map<string, string>();
+
+/** Store or clear an account's in-memory API key (persisted separately in VS Code secret storage). */
+export function setAccountApiKey(id: string, key?: string): void {
+  const trimmed = key?.trim();
+  if (trimmed) apiKeys.set(id, trimmed);
+  else apiKeys.delete(id);
+}
+
+export function hasAccountApiKey(id: string): boolean {
+  return apiKeys.has(id);
+}
+
+/** Session-only `--settings` flag for Antigravity API-key mode (never touches ~/.gemini/antigravity-cli/settings.json). */
+export function agySettingsArgs(apiKey?: boolean): string[] {
+  return apiKey ? ['--settings', JSON.stringify({ modelProvider: 'gemini' })] : [];
+}
+
+/** Environment that points the CLI at this account's own config home (or Gemini API key). */
 export function accountEnv(account: Account, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, NO_COLOR: '1', FORCE_COLOR: '0' };
   // Electron-hosted parents (VS Code etc.) leak this, which would turn Node-based CLIs into plain node.
   delete env.ELECTRON_RUN_AS_NODE;
+  if (account.kind === 'antigravity' && account.auth === 'apiKey') {
+    const key = apiKeys.get(account.id);
+    if (key) env.GEMINI_API_KEY = key;
+  }
   if (!account.home) return env;
   if (account.kind === 'codex') env.CODEX_HOME = account.home;
   if (account.kind === 'claude') env.CLAUDE_CONFIG_DIR = account.home;
@@ -114,6 +136,8 @@ export interface ArgsInput {
   browser?: { outputDir: string; configFile: string };
   /** Folders outside the workspace the agent may also write to (Super Agent's files for this project). */
   dirs?: string[];
+  /** Antigravity only: run with `modelProvider: "gemini"` (uses GEMINI_API_KEY instead of Google account login). */
+  apiKey?: boolean;
 }
 
 /** Pinned so every agent gets the same, known-good browser tools. */
@@ -220,7 +244,11 @@ export function buildArgs(i: ArgsInput): string[] {
   const perms = i.mode === 'read-only' ? ['--mode', 'plan'] : i.autonomy === 'full' ? ['--dangerously-skip-permissions'] : ['--mode', 'accept-edits', '--sandbox'];
   // The browser (registered by ensureAgyBrowser) is allowed per run, like commands.
   const allow = [...(standard ? ['command(*)'] : []), ...(i.browser ? ['mcp(playwright/*)'] : [])];
-  const settings = allow.length ? ['--settings', JSON.stringify({ permissions: { allow } })] : [];
+  const settingsObj: Record<string, unknown> = {
+    ...(allow.length ? { permissions: { allow } } : {}),
+    ...(i.apiKey ? { modelProvider: 'gemini' } : {}),
+  };
+  const settings = Object.keys(settingsObj).length ? ['--settings', JSON.stringify(settingsObj)] : [];
   return ['--output-format', 'stream-json', ...(i.resume ? ['--conversation', i.resume] : []), ...perms, ...dirs.flatMap((d) => ['--add-dir', d]), ...settings, ...model];
 }
 

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Account } from '../core/types';
+import { accountEnv, agySettingsArgs } from '../core/agents/cli';
 
 export interface ModelOption {
   id: string;
@@ -46,7 +47,7 @@ function resolveAlias(id: string, options: ModelOption[]): string | undefined {
   const newest = options.find((o) => o.id.toLowerCase().includes(`-${m[1].toLowerCase()}-`) || o.id.toLowerCase().endsWith(`-${m[1].toLowerCase()}`));
   return newest ? `${newest.name}${m[2] ? ' 1M' : ''}` : undefined;
 }
-let agyCache: ModelOption[] | null = null;
+const agyCache = new Map<'account' | 'apiKey', ModelOption[]>();
 
 /** Models this account's CLI offers. */
 export async function listModels(acc: Account, cliPath: string | null): Promise<ModelOption[]> {
@@ -64,17 +65,19 @@ export async function listModels(acc: Account, cliPath: string | null): Promise<
     return [];
   }
   if (acc.kind === 'claude') return claudeModels(acc).catch(() => []);
-  if (agyCache) return agyCache;
+  const mode = acc.auth === 'apiKey' ? 'apiKey' : 'account';
+  const cached = agyCache.get(mode);
+  if (cached) return cached;
   if (!cliPath) return [];
   const out = await new Promise<string>((resolve) =>
-    execFile(cliPath, ['models'], { timeout: 30000, windowsHide: true }, (_e, stdout) => resolve(String(stdout ?? ''))),
+    execFile(cliPath, [...agySettingsArgs(mode === 'apiKey'), 'models'], { env: accountEnv(acc), timeout: 30000, windowsHide: true }, (_e, stdout) => resolve(String(stdout ?? ''))),
   );
   const parsed = out
     .split(/\r?\n/)
     .map((l) => l.split('\t'))
     .filter((p) => p.length >= 2 && p[0].trim())
     .map(([id, name]) => ({ id: id.trim(), name: name.trim() }));
-  if (parsed.length) agyCache = parsed;
+  if (parsed.length) agyCache.set(mode, parsed);
   return parsed;
 }
 

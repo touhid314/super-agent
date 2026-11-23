@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Account } from '../types';
-import { accountEnv, commandLine } from './cli';
+import { accountEnv, agySettingsArgs, commandLine } from './cli';
 import { log } from '../log';
 import { killTree } from './runner';
 
@@ -144,7 +144,7 @@ function claudeCommands(account: Account, cliPath: string, cwd: string): Promise
 
 /** Antigravity announces its commands (built-ins and skills) to an ACP client when a session starts. */
 function agyCommands(account: Account, cliPath: string, cwd: string): Promise<SlashCommand[]> {
-  const child = spawn(cliPath, ['acp'], { cwd, env: accountEnv(account), windowsHide: true, detached: process.platform !== 'win32' });
+  const child = spawn(cliPath, [...agySettingsArgs(account.auth === 'apiKey'), 'acp'], { cwd, env: accountEnv(account), windowsHide: true, detached: process.platform !== 'win32' });
   let sessionId: string | undefined;
   return probe(
     child,

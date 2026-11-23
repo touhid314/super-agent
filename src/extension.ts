@@ -4,7 +4,7 @@ import { createTranscriber } from './core/voice/audio';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { AccountService } from './core/agents/accounts';
-import { CLI_META, ensureAgyBrowser, quote } from './core/agents/cli';
+import { CLI_META, ensureAgyBrowser, quote, setAccountApiKey } from './core/agents/cli';
 import { AccountPool } from './core/agents/pool';
 import { HotAgents, askSummary } from './core/agents/hot';
 import { killOrphans } from './core/agents/orphans';
@@ -492,11 +492,21 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   pool.onChange(() => pushState());
 
+  const geminiKeyName = (id: string) => `superAgent.geminiApiKey.${id}`;
   const refreshModels = async () => {
     for (const a of config.accounts) modelOptions[a.id] = await listModels(a, accounts.cliPath(a.kind)).catch(() => []);
     pushState();
   };
-  void refreshModels();
+  void (async () => {
+    const keyAccounts = config.accounts.filter((a) => a.kind === 'antigravity' && a.auth === 'apiKey');
+    if (keyAccounts.length) {
+      for (const a of keyAccounts) setAccountApiKey(a.id, await context.secrets.get(geminiKeyName(a.id)));
+      accounts.refreshAll();
+      accounts.ensureMaster();
+      pushState();
+    }
+    await refreshModels();
+  })();
 
   /** Webview URLs for attached files, so images show as thumbnails. */
   function fileUris(files: string[]): Record<string, string> {
@@ -558,14 +568,42 @@ export function activate(context: vscode.ExtensionContext): void {
 
   /** Removing (confirmed): gone from Super Agent; a login Super Agent created goes with it, your own CLI login stays. */
   async function removeAccount(a: Account): Promise<void> {
-    const own = a.home === null;
-    const detail = own
-      ? `Super Agent stops using it. ${CLI_META[a.kind].name} itself stays signed in (it's your own login); sign out first if you want that too.`
-      : 'Its sign-in, which Super Agent created, is deleted with it.';
+    const detail =
+      a.auth === 'apiKey'
+        ? 'Its saved Gemini API key is removed from Super Agent.'
+        : a.home === null
+          ? `Super Agent stops using it. ${CLI_META[a.kind].name} itself stays signed in (it's your own login); sign out first if you want that too.`
+          : 'Its sign-in, which Super Agent created, is deleted with it.';
     const ok = await vscode.window.showWarningMessage(`Remove ${a.label} from Super Agent?`, { modal: true, detail }, 'Remove');
     if (ok !== 'Remove') return;
     hot.closeAccount(a.id);
+    if (a.auth === 'apiKey') {
+      setAccountApiKey(a.id, undefined);
+      await context.secrets.delete(geminiKeyName(a.id));
+    }
     accounts.remove(a.id);
+    pushState();
+  }
+
+  async function promptGeminiApiKey(title: string): Promise<string | undefined> {
+    const raw = await vscode.window.showInputBox({
+      title,
+      prompt: 'Paste your GEMINI_API_KEY from Google AI Studio (aistudio.google.com)',
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (v) => (!v.trim() ? 'Enter a Gemini API key.' : undefined),
+    });
+    return raw?.trim() || undefined;
+  }
+
+  async function updateApiKey(a: Account): Promise<void> {
+    const key = await promptGeminiApiKey(`Update Gemini API key (${a.label})`);
+    if (!key) return;
+    await context.secrets.store(geminiKeyName(a.id), key);
+    setAccountApiKey(a.id, key);
+    hot.closeAccount(a.id);
+    accounts.refreshStatus(a.id);
+    modelOptions[a.id] = await listModels(a, accounts.cliPath(a.kind)).catch(() => []);
     pushState();
   }
 
@@ -581,13 +619,16 @@ export function activate(context: vscode.ExtensionContext): void {
       ...modelOptions[id].map((o) => ({ label: `${a.model === o.id ? '$(check) ' : ''}${o.name}`, description: o.id, detail: o.description, id: o.id })),
       // The account itself.
       { label: 'Account', kind: vscode.QuickPickItemKind.Separator },
-      signedOut
-        ? { label: '$(sign-in) Sign in', description: a.label, id: '__signIn' }
-        : { label: '$(sign-out) Sign out', description: a.label, id: '__signOut' },
+      a.auth === 'apiKey'
+        ? { label: '$(key) Update API key', description: a.label, id: '__apiKey' }
+        : signedOut
+          ? { label: '$(sign-in) Sign in', description: a.label, id: '__signIn' }
+          : { label: '$(sign-out) Sign out', description: a.label, id: '__signOut' },
       { label: '$(trash) Remove from Super Agent', description: a.label, id: '__remove' },
     ];
     const pick = await vscode.window.showQuickPick(items, { placeHolder: `Model for ${a.label}`, matchOnDescription: true });
     if (!pick || pick.id === undefined) return;
+    if (pick.id === '__apiKey') return updateApiKey(a);
     if (pick.id === '__signIn') return accounts.signIn(id);
     if (pick.id === '__signOut') return signOutAccount(a);
     if (pick.id === '__remove') return removeAccount(a);
@@ -761,6 +802,48 @@ export function activate(context: vscode.ExtensionContext): void {
     ];
     const pick = kind ? { agent: kind } : await vscode.window.showQuickPick(kinds, { placeHolder: 'Which agent account do you want to add?' });
     if (!pick) return;
+    if (pick.agent === 'antigravity') {
+      const method = await vscode.window.showQuickPick(
+        [
+          {
+            label: '$(account) Sign in with account',
+            description: 'Google account or Vertex AI',
+            detail: "Consumer OAuth in third-party apps is unsupported; GEMINI_API_KEY or Vertex AI is Google's officially supported path.",
+            auth: 'account' as const,
+          },
+          {
+            label: '$(key) API key',
+            description: 'GEMINI_API_KEY (Google AI Studio)',
+            detail: 'Runs Antigravity CLI with your Gemini API key. Stored in VS Code secret storage.',
+            auth: 'apiKey' as const,
+          },
+        ],
+        {
+          title: 'Add Antigravity',
+          placeHolder: 'How would you like to authenticate Antigravity?',
+        },
+      );
+      if (!method) return;
+      if (method.auth === 'apiKey') {
+        const key = await promptGeminiApiKey('Add Antigravity (Gemini API key)');
+        if (!key) return;
+        try {
+          const acc = accounts.add('antigravity', '', 'apiKey');
+          await context.secrets.store(geminiKeyName(acc.id), key);
+          setAccountApiKey(acc.id, key);
+          accounts.refreshStatus(acc.id);
+          if (!accounts.cliPath('antigravity')) void installMissing(['antigravity']).then(() => (registerAgyBrowser(), refreshModels()));
+          else {
+            registerAgyBrowser();
+            void refreshModels();
+          }
+        } catch (err) {
+          void vscode.window.showErrorMessage(String((err as Error).message));
+        }
+        pushState();
+        return;
+      }
+    }
     try {
       const acc = accounts.add(pick.agent, '');
       if (accounts.cliPath(pick.agent)) accounts.signIn(acc.id);
@@ -873,8 +956,10 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'setMaster':
         accounts.setMaster(m.id);
         return pushState();
-      case 'signIn':
-        return accounts.signIn(m.id);
+      case 'signIn': {
+        const a = config.account(m.id);
+        return a?.auth === 'apiKey' ? void updateApiKey(a) : accounts.signIn(m.id);
+      }
       case 'addAccount':
         return void addAccount(AGENT_KINDS.includes(m.kind) ? m.kind : undefined);
       case 'undoChanges':

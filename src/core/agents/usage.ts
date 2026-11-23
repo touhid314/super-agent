@@ -172,6 +172,7 @@ let agyPath: string | null | undefined;
 
 /** Antigravity's quota from its `/usage` command (answered locally by the CLI: no model call, no tokens). */
 export async function agyUsage(acc: Account): Promise<Omit<AccountUsage, 'runsToday'>> {
+  if (acc.auth === 'apiKey') return { windows: [], note: 'Pay-as-you-go (Gemini API key)' };
   agyPath ??= resolveCli('antigravity').path;
   if (!agyPath) return { windows: [], note: 'Antigravity is not installed' };
   const out = await new Promise<string>((resolve, reject) =>

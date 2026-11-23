@@ -73,6 +73,8 @@ For example: **"Fix the login bug and add tests."** The lead fixes the bug while
 
 Mix and match freely: two Claude Code accounts, a Codex account and an Antigravity account make a team of four. Each member shows its brand logo and the model it runs, and you can pick the model per agent.
 
+> **Antigravity note:** Google's consumer terms do not support wrapping `agy` with a personal OAuth login in third-party apps; `GEMINI_API_KEY` (supported when adding Antigravity) or Vertex AI is Google's officially supported path.
+
 ## How the team works
 
 ```mermaid

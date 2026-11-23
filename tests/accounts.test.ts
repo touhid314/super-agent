@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AccountService } from '../src/core/agents/accounts';
+import { AccountService, detectLogin } from '../src/core/agents/accounts';
+import { setAccountApiKey } from '../src/core/agents/cli';
 import { AccountPool } from '../src/core/agents/pool';
 import type { Account } from '../src/core/types';
 import { sharesLogin } from '../src/core/store/config';
@@ -42,5 +43,33 @@ describe('shared logins', () => {
     expect(sharesLogin(acc('claude', data), data)).toBe(true); // the data folder itself isn't an account folder
     expect(sharesLogin(acc('claude', `${data}-other`), data)).toBe(true); // a look-alike path
     expect(sharesLogin(acc('antigravity', null), data)).toBe(false); // one login per PC: nothing to isolate
+  });
+});
+
+describe('Antigravity API key accounts', () => {
+  it('allows adding an API-key Antigravity account alongside a signed-in Antigravity account and tracks key presence', () => {
+    const accounts: Account[] = [{ id: 'a1', kind: 'antigravity', label: 'Antigravity 1', home: null, role: 'master', createdAt: 0 }];
+    const pool = new AccountPool();
+    const cfg = {
+      accounts,
+      settings: { cliPaths: {} },
+      account: (id: string) => accounts.find((a) => a.id === id),
+      master: () => accounts.find((a) => a.role === 'master'),
+      saveAccounts: () => undefined,
+    };
+    const service = new AccountService(cfg as never, pool);
+
+    expect(() => service.add('antigravity', '')).toThrow(/only one signed-in Antigravity account/i);
+    const keyAcc = service.add('antigravity', '', 'apiKey');
+    expect(keyAcc.auth).toBe('apiKey');
+    expect(keyAcc.label).toBe('Antigravity · API key');
+    expect(detectLogin(keyAcc).login).toBe('signed-out');
+
+    setAccountApiKey(keyAcc.id, 'AIza-test-key');
+    try {
+      expect(detectLogin(keyAcc).login).toBe('signed-in');
+    } finally {
+      setAccountApiKey(keyAcc.id, undefined);
+    }
   });
 });

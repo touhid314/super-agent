@@ -8,7 +8,7 @@ on:
 
 jobs:
   publish:
-    name: Build and Publish to VS Code Marketplace
+    name: Build and Publish to VS Code Marketplace and Open VSX
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,3 +38,13 @@ jobs:
 
       - name: Publish to VS Code Marketplace
         run: npx --yes @vscode/vsce publish --oidc --no-dependencies --skip-duplicate --target win32-x64 win32-arm64 linux-x64
+
+      - name: Publish to Open VSX (Cursor, Windsurf, VSCodium)
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then echo "OVSX_PAT secret not set; skipping Open VSX"; exit 0; fi
+          for t in win32-x64 win32-arm64 linux-x64; do
+            npx --yes @vscode/vsce package --no-dependencies --target "$t" -o "super-agent-$t.vsix"
+            npx --yes ovsx publish "super-agent-$t.vsix" --skip-duplicate
+          done

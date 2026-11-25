@@ -18,6 +18,7 @@ export interface SlashCommand {
 
 /** Commands Super Agent runs itself: they change its own state (threads, the lead's settings), which the CLI can't. */
 export const OWN_COMMANDS: SlashCommand[] = [
+  { name: 'btw', hint: '<question>', description: 'Ask a side question without interrupting the current task', source: 'super-agent' },
   { name: 'new', description: 'Start a new thread', source: 'super-agent' },
   { name: 'clear', description: 'Start a new thread with empty context', source: 'super-agent' },
   { name: 'model', hint: '[model id]', description: "Choose the lead's model", source: 'super-agent' },

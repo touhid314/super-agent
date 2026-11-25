@@ -14,7 +14,7 @@ export const DEFAULT_SETTINGS: Settings = {
   workspace: 'shared',
   soundOnDone: true,
   maxFixAttempts: 3,
-  taskTimeoutMin: 30,
+  taskTimeoutMin: 0,
   verifyTimeoutMin: 10,
   cliPaths: {},
 };

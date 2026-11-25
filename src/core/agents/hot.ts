@@ -8,7 +8,7 @@ import { log } from '../log';
 import { projectDir } from '../store/paths';
 import { killTreesNow } from './orphans';
 import { codexPrompts, expandPrompt } from './commands';
-import { ANSI, AUTH_FAILED, RATE_LIMIT, errorOf, killTree, renderAgyEvent, renderClaudeEvent, runAgent, toolLabel, type ApprovalAnswer, type ApprovalAsk, type RunRequest, type RunResult } from './runner';
+import { AgyTurnOutput, ANSI, AUTH_FAILED, RATE_LIMIT, errorOf, killTree, renderAgyEvent, renderClaudeEvent, runAgent, toolLabel, type ApprovalAnswer, type ApprovalAsk, type RunRequest, type RunResult } from './runner';
 
 /**
  * Hot agents: starting a CLI costs 2–4 s per message, so processes are kept running between turns.
@@ -63,6 +63,7 @@ interface TurnCtx {
   awaitingEcho?: boolean;
   /** Background work still running when the turn ended (Claude Code). */
   background?: string[];
+  agyOutput?: AgyTurnOutput;
 }
 
 interface StreamProc {
@@ -232,6 +233,7 @@ export class HotAgents {
   private open(req: RunRequest, resolve: (r: RunResult) => void, stop: (t: TurnCtx) => void): TurnCtx {
     fs.mkdirSync(path.dirname(req.logFile), { recursive: true });
     const t: TurnCtx = { req, log: fs.createWriteStream(req.logFile, { flags: 'a' }), raw: '', final: '', cancelled: false, timedOut: false, resolve, timer: undefined as never, deadline: 0, stop, asking: 0, files: new Map() };
+    if (req.account.kind === 'antigravity') t.agyOutput = new AgyTurnOutput();
     this.emit(t, `$ ${req.account.kind} (${req.account.label}) in ${req.cwd} · hot\n\n`);
     this.arm(t, req.timeoutMs);
     this.byRun.set(req.runId, () => {
@@ -241,13 +243,17 @@ export class HotAgents {
     return t;
   }
 
-  /** The turn's time limit: stops it once `ms` have passed. */
+  /** Normal work has no deadline; explicit positive limits are for bounded probes/tests. */
   private arm(t: TurnCtx, ms: number): void {
     clearTimeout(t.timer);
+    if (ms <= 0) {
+      t.deadline = 0;
+      return;
+    }
     t.deadline = Date.now() + ms;
     t.timer = setTimeout(() => {
       t.timedOut = true;
-      this.emit(t, `\n[super-agent] timed out after ${Math.round(t.req.timeoutMs / 60000)} min, stopping.\n`);
+      this.emit(t, `\n[super-agent] timed out after ${Math.round(t.req.timeoutMs / 60000)} min${t.agyOutput ? ' without activity' : ''}, stopping.\n`);
       t.stop(t);
     }, ms);
   }
@@ -383,6 +389,9 @@ export class HotAgents {
       // Its background work ends with it: nothing will wake it up any more.
       if (p.tasks?.length && p.sessionId) this.onBackground?.({ account, sessionId: p.sessionId, tasks: [] });
       if (p.turn) {
+        if (p.buf) this.onStreamLine(p, p.buf);
+      }
+      if (p.turn) {
         const t = p.turn;
         p.turn = undefined;
         this.finish(t, code ?? 1);
@@ -400,7 +409,8 @@ export class HotAgents {
     t.sessionId ??= p.sessionId;
     if (t.awaitingEcho && /"isReplay"\s*:\s*true/.test(line)) t.awaitingEcho = false; // it starts on our message now
     if (p.account.kind === 'claude' && /^\s*\{"type"\s*:\s*"control_request"/.test(line)) return void this.onClaudeRequest(p, t, line);
-    const r = p.account.kind === 'claude' ? renderClaudeEvent(line) : renderAgyEvent(line);
+    const r = p.account.kind === 'claude' ? renderClaudeEvent(line) : t.agyOutput!.render(line);
+    if ('activity' in r && r.activity && !t.asking) this.arm(t, t.req.timeoutMs);
     this.emit(t, r.text);
     if (r.final === undefined) return; // not the end of the turn yet
     // A turn Claude ran before getting to our message (e.g. a notice about a background task cut off by the restart).
@@ -685,7 +695,7 @@ export class HotAgents {
   /** Waits for your answer; the turn's time limit doesn't run meanwhile. */
   private async askUser(t: TurnCtx, ask: ApprovalAsk): Promise<ApprovalAnswer> {
     if (t.asking++ === 0) clearTimeout(t.timer);
-    const left = Math.max(t.deadline - Date.now(), 5 * 60000);
+    const left = t.deadline > 0 ? Math.max(t.deadline - Date.now(), 5 * 60000) : 0;
     const answer = await t.req.onApproval!(ask).catch((): ApprovalAnswer => 'decline');
     if (--t.asking === 0 && this.byRun.has(t.req.runId)) this.arm(t, left);
     const verdict = answer === 'accept' ? 'allowed' : answer === 'acceptForSession' ? 'allowed for this session' : 'declined';

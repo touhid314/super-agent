@@ -313,6 +313,7 @@ export function contextBrief(t: Thread, labelOf: (id?: string) => string, why: s
  */
 export const NARRATE = `<super-agent-internal>
 The user follows your work live, so give a short progress update (one sentence, plain text) at the moments that matter: when you start a new phase of the work (investigating, changing code, testing), when you find something important, and when your plan changes. Not before every command or file you read: routine steps go by without comment.
+Keep progress updates separate from your last response. Your last response is the final answer to the user: give the result directly, without repeating progress narration or internal thinking.
 </super-agent-internal>
 
 `;

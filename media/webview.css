@@ -125,6 +125,7 @@ i.week { background: #58a6ff; }
 .crumbs { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 4px; min-width: 0; padding: 6px 0; margin-bottom: 4px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--line); font-size: 12px; }
 .crumbs .back { flex: none; border: 1px solid var(--line); background: var(--soft); border-radius: 6px; width: 24px; height: 22px; cursor: pointer; }
 .crumbs .back:hover { border-color: var(--vscode-focusBorder); }
+.crumbs .aside-back { width: auto; height: auto; padding: 4px 8px; white-space: nowrap; }
 .crumb { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex-shrink: 1; }
 .crumb a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
 .crumb a:hover { text-decoration: underline; }

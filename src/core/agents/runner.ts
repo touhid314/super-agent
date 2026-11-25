@@ -16,6 +16,7 @@ export interface RunRequest {
   cwd: string;
   prompt: string;
   logFile: string;
+  /** 0 disables automatic termination. Positive limits are reserved for bounded probes/tests. */
   timeoutMs: number;
   onText: (text: string) => void;
   /** Continue an earlier CLI session instead of starting fresh (keeps the agent's full context). */
@@ -176,6 +177,7 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
     let claudeFinal = '';
     let stdoutText = '';
     let lineBuf = '';
+    const agyOutput = new AgyTurnOutput();
 
     const onStdout = (buf: Buffer) => {
       const s = buf.toString('utf8').replace(ANSI, '');
@@ -189,7 +191,8 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
       const lines = lineBuf.split('\n');
       lineBuf = lines.pop() ?? '';
       for (const line of lines) {
-        const r = agy ? renderAgyEvent(line) : renderClaudeEvent(line);
+        const r = agy ? agyOutput.render(line) : renderClaudeEvent(line);
+        if (agy && 'activity' in r && r.activity) armTimeout();
         if (r.final !== undefined) claudeFinal = r.final;
         emit(r.text);
       }
@@ -202,11 +205,17 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
     });
 
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      emit(`\n[super-agent] timed out after ${Math.round(req.timeoutMs / 60000)} min, stopping.\n`);
-      if (child.pid) killTree(child.pid);
-    }, req.timeoutMs);
+    let timer: NodeJS.Timeout;
+    const armTimeout = () => {
+      clearTimeout(timer);
+      if (req.timeoutMs <= 0) return;
+      timer = setTimeout(() => {
+        timedOut = true;
+        emit(`\n[super-agent] timed out after ${Math.round(req.timeoutMs / 60000)} min${agy ? ' without activity' : ''}, stopping.\n`);
+        if (child.pid) killTree(child.pid);
+      }, req.timeoutMs);
+    };
+    armTimeout();
 
     child.on('error', (err) => emit(`\n[super-agent] failed to start: ${err.message}\n`));
     child.on('close', (code) => {
@@ -214,7 +223,7 @@ export function runAgent(req: RunRequest): Promise<RunResult> {
       active.delete(req.runId);
       if (agy && fs.existsSync(promptFile)) fs.rmSync(promptFile, { force: true });
       if (lineBuf) {
-        const r = agy ? renderAgyEvent(lineBuf) : renderClaudeEvent(lineBuf);
+        const r = agy ? agyOutput.render(lineBuf) : renderClaudeEvent(lineBuf);
         if (r.final !== undefined) claudeFinal = r.final;
         emit(r.text);
       }
@@ -260,6 +269,44 @@ export function errorOf(tail: string): string | undefined {
   return (msg ? msg.replace(/\\"/g, '"') : line.replace(/^.*?(Error:|error:)\s*/, '')).trim().slice(0, 300) || undefined;
 }
 
+/** One turn's response blocks. agy's result.response concatenates progress and the answer. */
+export class AgyTurnOutput {
+  private lastStep = -1;
+  private responseStep = -1;
+  private response = '';
+  private completed = false;
+
+  render(line: string): { text: string; final?: string; activity?: boolean } {
+    const rendered = renderAgyEvent(line);
+    let ev: any;
+    try { ev = JSON.parse(line); } catch { return rendered; }
+    if (ev.event === 'step_update') {
+      const s = ev.step_update ?? {};
+      const indexed = Number.isInteger(s.step_index) && s.step_index >= 0;
+      if (indexed && s.step_type !== 'user_input') this.lastStep = Math.max(this.lastStep, s.step_index);
+      if (indexed && s.step_type === 'agent_response' && s.step_index >= this.responseStep) {
+        if (s.step_index !== this.responseStep) {
+          this.response = '';
+          this.completed = false;
+          this.responseStep = s.step_index;
+        }
+        if (typeof s.text_delta === 'string') this.response += s.text_delta;
+        if (s.state === 'DONE') this.completed = true;
+        if (s.state === 'ERROR') this.completed = false;
+      }
+      return { ...rendered, activity: s.step_type !== 'user_input' &&
+        (!!s.text_delta || ['ACTIVE', 'DONE', 'ERROR'].includes(s.state)) };
+    }
+    if (ev.event === 'result' && rendered.final !== undefined && ev.result?.status === 'SUCCESS') {
+      // Never mistake a progress update before a denied/unfinished tool for an answer.
+      // Older CLIs without indexed updates retain their result-only behavior.
+      return { ...rendered, final: this.lastStep < 0 ? rendered.final :
+        this.completed && this.responseStep === this.lastStep ? this.response.trim() : '' };
+    }
+    return rendered;
+  }
+}
+
 /** Turn one Antigravity (agy) stream-json line into readable console text. */
 export function renderAgyEvent(line: string): { text: string; final?: string } {
   const trimmed = line.trim();
@@ -272,7 +319,8 @@ export function renderAgyEvent(line: string): { text: string; final?: string } {
   }
   if (ev.event === 'step_update') {
     const s = ev.step_update ?? {};
-    if (s.text_delta) return { text: String(s.text_delta) };
+    if (s.text_delta && s.step_type === 'agent_response') return { text: String(s.text_delta) };
+    if (['thinking', 'reasoning', 'agent_thought'].includes(s.step_type)) return { text: '' };
     if (s.state === 'ACTIVE' && s.step_type && !['user_input', 'agent_response'].includes(s.step_type)) {
       const what = s.tool_name ?? s.step_type;
       return { text: `\n→ ${String(what).replace(/_/g, ' ')} ${agyDetail(s)}\n` };

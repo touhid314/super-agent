@@ -78,6 +78,7 @@ const HELP = [
   '/recent: recently changed files',
   '/find NAME: search the workspace',
   '/sync: catch up with VS Code (the running thread, live)',
+  '/btw QUESTION: ask a side question; your main conversation keeps running',
   '/new: start a new thread',
   '/threads: recent threads (switch with /use N)',
   '/stop: stop the current thread',
@@ -85,7 +86,7 @@ const HELP = [
   "The lead's own commands work too (e.g. /compact, /review, its skills): they go to its CLI as typed.",
 ].join('\n');
 /** The bot's own commands (anything else starting with / may be the lead's, see isLeadCommand). */
-const TG_COMMANDS = new Set(['start', 'help', 'pair', 'new', 'threads', 'sync', 'use', 'stop', 'team', 'agents', 'files', 'ls', 'recent', 'find', 'search']);
+const TG_COMMANDS = new Set(['start', 'help', 'pair', 'new', 'threads', 'sync', 'use', 'stop', 'team', 'agents', 'files', 'ls', 'recent', 'find', 'search', 'btw']);
 
 interface TgCallback {
   id: string;
@@ -193,6 +194,7 @@ export class TelegramRelay {
         { command: 'recent', description: 'Recently changed files' },
         { command: 'find', description: 'Search files by name' },
         { command: 'sync', description: 'Catch up with VS Code (the running thread)' },
+        { command: 'btw', description: 'Ask a side question without interrupting work' },
         { command: 'new', description: 'Start a new thread' },
         { command: 'threads', description: 'Recent threads' },
         { command: 'stop', description: 'Stop the current thread' },
@@ -427,7 +429,10 @@ ${text}` : words;
       if (name === 'files' || name === 'ls') return void (await this.files.open(chat));
       if (name === 'recent') return void (await this.files.recent(chat));
       if (name === 'find' || name === 'search') return void (await this.files.find(chat, arg));
-      return void (await this.reply(chat, `Unknown command.\n\n${HELP}`));
+      if (name === 'btw') {
+        if (!arg.trim()) return void (await this.reply(chat, 'Usage: /btw <question>'));
+        text = `/btw ${arg}`;
+      } else return void (await this.reply(chat, `Unknown command.\n\n${HELP}`));
     }
 
     const cwd = this.d.cwd();
@@ -449,7 +454,7 @@ ${text}` : words;
         : this.d.engine.send(current, text, cwd, files);
     this.track(t.id);
     // A message to a busy lead may become its own thread; your conversation stays where it was.
-    if (!current || (t.id !== current && t.parentId !== current)) this.setCurrent(t.id);
+    if (!t.aside?.threadId && (!current || (t.id !== current && t.parentId !== current))) this.setCurrent(t.id);
     // Tell the user about hand-offs and queueing (system notes this message caused).
     const notes = [current, t.id]
       .map((id) => (id ? this.d.engine.get(id) : undefined))

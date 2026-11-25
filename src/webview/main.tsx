@@ -301,6 +301,16 @@ function App() {
             <ThreadActions id={thread.id} />
           </div>
         )}
+        {thread?.aside && (
+          <nav className="crumbs" aria-label="Side conversation">
+            {state.threads.some((t) => t.id === thread.aside!.threadId) && (
+              <button className="back aside-back" onClick={() => setSelected(thread.aside!.threadId!)} title={thread.aside.title}>
+                Back to main thread
+              </button>
+            )}
+            <span className="muted">Side question · read only</span>
+          </nav>
+        )}
         {parents.length > 0 && (
           <nav className="crumbs">
             <button className="back" title="Back to the thread this one helps" onClick={() => setSelected(parents.at(-1)!.id)}>

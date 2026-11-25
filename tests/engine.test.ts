@@ -53,6 +53,80 @@ function setup(accounts: Account[], agent: (req: RunRequest, n: number) => Promi
 
 const msgs = (t: Thread, role: string) => t.messages.filter((m) => m.role === role).map((m) => m.text);
 
+describe('/btw side conversations', () => {
+  it('answers concurrently on a solo account without steering, cancelling or changing the main conversation', async () => {
+    let finish!: () => void;
+    const hold = new Promise<void>((r) => { finish = r; });
+    const steer = vi.fn(async () => true);
+    const snapshot = vi.fn(async () => 'snapshot');
+    const h = setup([acc('a', 'codex', 'master')], async (_req, n) => {
+      if (n === 1) await hold;
+      return ok(n === 1 ? 'main answer' : 'side answer', n === 1 ? 'main-session' : 'side-session');
+    }, { steer, changes: { snapshot, diff: vi.fn(async () => undefined) } });
+    try {
+      const main = h.engine.send(undefined, 'build a parser', h.cwd);
+      await h.idle(() => h.runs.length === 1);
+      h.runs[0].onText('Inspecting parser.ts\n');
+      const before = JSON.stringify(main);
+      const side = h.engine.send(main.id, '/btw Why use a syntax tree?', h.cwd);
+      await h.idle(() => side.status === 'idle');
+      expect(JSON.stringify(main)).toBe(before);
+      expect(main.status).toBe('working');
+      expect(steer).not.toHaveBeenCalled();
+      expect(h.runs).toHaveLength(2);
+      expect(h.runs[1]).toMatchObject({ mode: 'read-only', browser: false, account: { id: 'a' } });
+      expect(h.runs[1].resume).toBeUndefined();
+      expect(h.runs[1].prompt).toContain('build a parser');
+      expect(h.runs[1].prompt).toContain('Why use a syntax tree?');
+      expect(h.runs[1].prompt).not.toContain('To give a teammate a task');
+      expect(side.parentId).toBeUndefined();
+      expect(side.aside?.threadId).toBe(main.id);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(h.pool.get('a').busyRuns).toBe(1);
+      finish();
+      await h.idle();
+      h.engine.send(main.id, 'continue the parser', h.cwd);
+      await h.idle();
+      expect(h.runs[2].resume).toBe('main-session');
+      expect(h.runs[2].prompt).not.toContain('syntax tree');
+      expect(msgs(main, 'user')).toEqual(['build a parser', 'continue the parser']);
+      h.engine.send(side.id, 'Explain that more', h.cwd);
+      await h.idle();
+      expect(h.runs[3]).toMatchObject({ mode: 'read-only', resume: 'side-session' });
+    } finally { finish(); h.engine.dispose(); }
+  });
+
+  it('rejects an empty question without creating or changing a thread', () => {
+    const h = setup([acc('a')], async () => ok('answer', 's'));
+    try {
+      expect(() => h.engine.sendBtw(undefined, '  ', h.cwd)).toThrow('Usage: /btw <question>');
+      expect(h.engine.threads).toHaveLength(0);
+    } finally { h.engine.dispose(); }
+  });
+
+  it('limits concurrency and deleting a side question never stops its main task', async () => {
+    const h = setup([acc('a')], async () => new Promise<RunResult>(() => {}));
+    try {
+      const main = h.engine.send(undefined, 'main', h.cwd);
+      const first = h.engine.sendBtw(main.id, 'first question', h.cwd);
+      const second = h.engine.sendBtw(main.id, 'second question', h.cwd);
+      expect(first.status).toBe('working');
+      expect(second.status).toBe('waiting');
+      expect(h.pool.get('a').busyRuns).toBe(2);
+      h.engine.deleteThread(first.id);
+      await h.idle(() => second.status === 'working');
+      expect(second.status).toBe('working');
+      expect(main.status).toBe('working');
+      expect(main.queue).toHaveLength(0);
+      expect(h.pool.get('a').busyRuns).toBe(2);
+      h.engine.deleteThread(main.id);
+      h.engine.deleteThread(second.id);
+      await h.idle(() => h.pool.get('a').busyRuns === 0);
+      expect(h.pool.get('a').busyRuns).toBe(0);
+    } finally { h.engine.dispose(); }
+  });
+});
+
 describe('lead works itself and keeps its context', () => {
   it('tells a solo agent how to deliver media on new and resumed turns', async () => {
     const h = setup([acc('a', 'codex', 'master')], async () => ok('ready', 'sess-media'), { mediaDelivery: () => true });
@@ -335,6 +409,30 @@ describe('coordination with minimal friction', () => {
     expect(h.runs.map((r) => r.account.id)).toEqual(['a', 'a']);
     expect(msgs(t, 'system').join(' ')).toContain('a hit a temporary service error (workspace routing discovery failed); trying again.');
     expect(msgs(t, 'agent')).toEqual(['hello!']);
+  });
+
+  it('resumes a stalled solo Antigravity session once, without replaying work from the start', async () => {
+    const h = setup([acc('a', 'antigravity', 'master')], async (_req, n) =>
+      n === 1 ? { ...ok('', 'saved-agy'), code: 1, timedOut: true } : ok('finished', 'saved-agy'),
+    );
+    try {
+      const t = h.engine.send(undefined, 'finish the render', h.cwd);
+      await h.idle(() => msgs(t, 'agent').length > 0);
+      expect(h.runs).toHaveLength(2);
+      expect(h.runs[1].resume).toBe('saved-agy');
+      expect(h.runs[1].prompt).toContain('Continue from your saved session');
+      expect(msgs(t, 'agent')).toEqual(['finished']);
+    } finally { h.engine.dispose(); }
+  });
+
+  it('does not loop when the resumed Antigravity session also stalls', async () => {
+    const h = setup([acc('a', 'antigravity', 'master')], async () => ({ ...ok('', 'saved-agy'), code: 1, timedOut: true }));
+    try {
+      const t = h.engine.send(undefined, 'finish the render', h.cwd);
+      await h.idle(() => h.finished.length > 0);
+      expect(h.runs).toHaveLength(2);
+      expect(msgs(t, 'system').at(-1)).toContain('Send a message to continue');
+    } finally { h.engine.dispose(); }
   });
 
   it('other failures with no one else free still stop and ask (no retry loop)', async () => {

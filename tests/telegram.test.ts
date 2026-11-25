@@ -85,6 +85,31 @@ function setup(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-tg-')), hold?: Pr
 }
 
 describe('Telegram relay', () => {
+  it('handles /btw@bot locally and leaves subsequent messages in the main conversation', async () => {
+    const h = setup();
+    try {
+      h.relay.start('123:token');
+      h.tg.say(7, `/start ${h.relay.pairCode}`);
+      await h.until(() => h.relay.state === 'on');
+      h.tg.say(7, 'build the parser');
+      await h.until(() => h.runs.length === 1 && h.engine.threads[0].status === 'idle');
+      const main = h.engine.threads[0];
+      h.tg.say(7, '/btw@mybot Why a tree?');
+      await h.until(() => h.runs.length === 2 && h.engine.threads[0].status === 'idle');
+      expect(h.engine.threads[0].aside?.threadId).toBe(main.id);
+      expect(h.runs[1].mode).toBe('read-only');
+      expect(h.runs[1].resume).toBeUndefined();
+      expect(h.runs[1].prompt).toContain('Why a tree?');
+      h.tg.say(7, 'continue main');
+      await h.until(() => h.runs.length === 3);
+      expect(main.messages.some((m) => m.text === 'continue main')).toBe(true);
+      expect(main.messages.some((m) => m.text.includes('/btw'))).toBe(false);
+      h.tg.say(7, '/btw');
+      await h.until(() => h.tg.sent.some((m) => m.text === 'Usage: /btw <question>'));
+      expect(h.tg.sent.some((m) => m.text === 'Usage: /btw <question>')).toBe(true);
+      expect(h.runs).toHaveLength(3);
+    } finally { h.relay.stop(); h.engine.dispose(); }
+  });
   it('answers permissions only from the paired chat and rejects stale or repeated buttons', async () => {
     const h = setup();
     try {

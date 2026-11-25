@@ -118,6 +118,7 @@ sequenceDiagram
 - **Different CLI** (for example, Claude Code to Codex): the new agent receives the previous agent's **own session**: every message, tool call and tool output, converted from the other CLI's transcript. As much as fits goes straight into its prompt (newest first, with long outputs trimmed in the middle). The complete transcript is saved to a file it can read for anything older. Hidden reasoning isn't stored readably by the CLIs, so that part can't be carried over. Antigravity, which takes its prompt as a command-line argument, gets a shorter inline part plus the file.
 - An agent that ran out rests until its limit resets, using the reset time the provider reports, and then rejoins automatically.
 - Free agents with the most usage left are chosen first.
+- Agent tasks have no automatic time limit, including Claude Code, Codex and Antigravity. They keep running until they finish, fail, or you stop them. Antigravity replies show its final response block; progress stays in the activity feed.
 
 ## Telegram: the team in your pocket
 
@@ -170,6 +171,7 @@ Claude Code · work        Codex · personal
 - **Files changed by agents are marked in the Explorer** with the name of the agent that changed them.
 - **Thread history** that survives restarts. A thread interrupted by closing VS Code picks up on your next message.
 - **Attach images and files** to a request.
+- **Side questions:** `/btw <question>` opens a separate read-only conversation with a snapshot of the current chat and recent activity. The main task keeps running; the side question never resumes or adds messages to its session. Use **Back to main thread** in the panel to return. In Telegram, `/btw` replies separately and subsequent messages stay in the main conversation (use `/threads` and `/use N` to open the side conversation). A solo account can answer alongside its main task; further questions wait when both slots are busy.
 - **The lead's own slash commands:** type `/` for the lead's commands, skills and custom prompts (`/compact`, `/review`, `/init`, …), plus Super Agent's `/new`, `/model` and `/effort`.
 - **Browser tools:** agents can navigate, click, read pages and take screenshots (Playwright).
 - **A chime** when work finishes, a different one when a helper finishes a piece or something fails.

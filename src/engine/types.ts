@@ -41,6 +41,8 @@ export interface Thread {
   title: string;
   /** A user-chosen title is never replaced by automatic first-message naming. */
   customTitle?: boolean;
+  /** An independent, read-only /btw conversation. Never reports back to or resumes the source session. */
+  aside?: { threadId?: string; title: string; context: string; accountId?: string };
   cwd: string;
   /** Agent currently leading (or last led) this thread. */
   leadId?: string;

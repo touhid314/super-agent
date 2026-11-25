@@ -182,6 +182,11 @@ export function activate(context: vscode.ExtensionContext): void {
   /** Runs a command typed in the panel: ours here, the lead's in its conversation; false when it isn't a command. */
   async function runCommand(threadId: string | undefined, text: string, folder: string): Promise<Thread | 'handled' | undefined> {
     const cmd = parseCommand(text);
+    if (cmd?.name === 'btw') {
+      if (cmd.args) return eng.sendBtw(threadId, cmd.args, folder);
+      void vscode.window.showInformationMessage('Usage: /btw <question>');
+      return 'handled';
+    }
     const found = cmd && (await leadCommands(threadId));
     const known = found?.list.find((c) => c.name === cmd!.name);
     if (!cmd || !found || !known) return undefined;

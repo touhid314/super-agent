@@ -76,6 +76,7 @@ export interface Settings {
   /** Whisper model for voice input (whisper.cpp's ggml names: tiny.en, base.en, small.en, …); default base.en. */
   voiceModel?: string;
   maxFixAttempts: number;
+  /** Legacy persisted setting. Normal agent turns always run without an automatic deadline. */
   taskTimeoutMin: number;
   verifyTimeoutMin: number;
   cliPaths: Partial<Record<AgentKind, string>>;
